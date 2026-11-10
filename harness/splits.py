@@ -4,8 +4,9 @@ windows it may never see. The loop gets `feedback`; the diagnostic gets `pilot`;
 
 Conventions: dates are inclusive ISO strings; every window ends at least `embargo` trading days before
 the next one starts so that overlapping labels cannot leak (de Prado's purging and embargo)."""
-from dataclasses import dataclass, field
 import datetime as dt
+from dataclasses import dataclass
+
 
 @dataclass(frozen=True)
 class Window:

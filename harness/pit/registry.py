@@ -13,10 +13,17 @@ their own availability column; the registry only checks the declared column.
 Every call is appended to the call log (JSONL) with the tool name, as_of, args and a hash of the
 result, so the audit can replay the run and the ledger can attribute each candidate to the data it saw."""
 from __future__ import annotations
-import datetime as dt, hashlib, json, pathlib, time
+
+import datetime as dt
+import hashlib
+import json
+import pathlib
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
+
 import pandas as pd
+
 
 class LookAheadError(RuntimeError): ...
 
