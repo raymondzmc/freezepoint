@@ -1,0 +1,24 @@
+# One arm of the controlled comparison. Every field here is part of the commitment hash.
+arm: bestofn            # frozen | refine | bestofn
+split: cn-2018-2023    # harness.splits name
+universe: csi300
+transfer_to: [csi500, sp500]  # universes the frozen artifact is scored on, never seen by the loop
+seeds: [0, 1, 2, 3, 4]
+generator:
+  provider: api
+  model: claude-fable-5-2
+  revision: claude-fable-5-2  # pin a dated snapshot id here before the real runs
+  temperature: null    # the Messages API no longer accepts sampling parameters, so the API samples at its default
+  max_output_tokens: 8192
+control_generator:
+  provider: local
+  model: pit-4b-ft-201912   # data/models.py name; effective cutoff from harness/cutoff_probe.py
+budget:
+  max_steps: 20            # refinement steps for the refine arm
+  n_candidates: 21         # best-of-N for the bestofn arm; max_steps + 1, so compute is equal
+  tokens_per_arm: 2000000
+verifier:
+  metric: ic               # rank IC on the feedback window
+  window_days: 1000        # the noise sweep's knob, for a later plan; this plan scores the whole feedback window
+stopping:
+  rule: none               # none | fixed_k | vrr_stop | pace | optimal_stopping | ours

@@ -35,3 +35,9 @@ class Split:
 
 DEFAULT = Split(name="cn-2018-2023", feedback=Window("2018-01-01", "2021-12-31"), pilot=Window("2022-01-17", "2022-06-30"),
                 heldout=Window("2022-07-15", "2023-12-31"), forward=None).check()
+
+SPLITS: dict[str, Split] = {DEFAULT.name: DEFAULT}
+
+def get(name: str) -> Split:
+    if name not in SPLITS: raise ValueError(f"unknown split {name!r}; known splits: {sorted(SPLITS)}")
+    return SPLITS[name]
