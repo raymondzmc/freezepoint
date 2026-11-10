@@ -25,3 +25,13 @@ package = false
 
 [tool.ruff]
 line-length = 120
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-m 'not api and not gpu'"
+markers = [
+    "data: needs Qlib or FNSPID data on disk",
+    "api: calls a paid API",
+    "gpu: loads a local model",
+]
