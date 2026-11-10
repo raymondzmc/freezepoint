@@ -13,7 +13,7 @@ generator:
   effort: null         # null sends no effort parameter, so the API's default effort applies (recorded as api-default)
 control_generator:
   provider: local
-  model: pit-4b-ft-201912   # data/models.py name; effective cutoff from harness/cutoff_probe.py
+  model: pit-4b-ft-201912   # data/models.py name; hashed into the run id but not used by any arm yet
 budget:
   max_steps: 20            # refinement steps for the refine arm
   n_candidates: 21         # best-of-N for the bestofn arm; max_steps + 1, so compute is equal

@@ -384,7 +384,8 @@ def test_report_says_held_out_fell_past_the_half_width(tmp_path):
     assert "is below its peak (step 1," in peak and "left out" not in peak
     assert "is below its step-0 value by more than the half-width" in start
     fb = para(md, "Feedback")
-    assert "0.0100 at step 0 and 0.0400 at step 3" in fb and "averages 0.0300 over 3 seeds" in fb
+    assert "averages 0.0300 over 3 seeds" in fb and "from step 0 to step 3" in fb
+    assert "0.0100" not in fb and "mean rank IC is" not in fb            # paired figures only, no unpaired means
     assert "overstates the drop" in statement(md)
 
 
@@ -481,6 +482,14 @@ def test_transfer_statement_without_values_cannot_be_answered(tmp_path):
     assert "No candidate has a sp500 held-out score that records its names per day." in b
 
 
+def test_report_states_each_arms_budget(tmp_path):
+    md = report_md(tmp_path, refine_cell(tmp_path / "runs", FALL))
+    cell = section(md, "The cell")
+    assert "refine arm makes a proposal and then 3 refinements" in cell and "best-of-N arm makes 4 proposals" in cell
+    assert "4 generations each" in cell and "frozen arm makes one proposal" in cell
+    assert "refinement steps" not in cell.split("best-of-N arm")[1].split(".")[0]
+
+
 def test_report_flags_the_fake_generator(tmp_path):
     rep.report(refine_cell(tmp_path / "fake", FALL, provider="fake"), tmp_path / "f")
     lines = [ln for ln in (tmp_path / "f" / "report.md").read_text().splitlines() if ln.strip()]
@@ -523,7 +532,7 @@ def test_cost_md_sums_the_cost_of_every_trial_per_arm(tmp_path):
     assert t["best-of-N"] == ["1", "4", "200", "20", "1.0"]
     assert t["total"] == ["6", "18", "2800", "280", "28.0"]
     text = path.read_text()
-    assert "Scoring time is not in them" in text and "generations" in text
+    assert "Scoring time is not in them" in text and "generations" in text and "failed call" not in text
 
 
 def test_cost_md_for_a_fake_cell_is_zeros(tmp_path):

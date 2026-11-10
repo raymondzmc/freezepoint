@@ -136,7 +136,7 @@ def _peak_and_start(refine: list, c: pd.DataFrame, window: str, K: int, held: st
     return [peak, start]
 
 
-def _statement(refine: list, ho: pd.DataFrame, fb: pd.DataFrame, K: int) -> str:
+def _statement(refine: list, ho: pd.DataFrame, K: int) -> str:
     """The go/no-go paragraphs: the refine arm's held-out score at step K against its peak and against step 0, and
     its feedback score from step 0 to step K, each paired by seed."""
     pair = _peak_and_start(refine, ho, "heldout", K, "held-out", "in the table below")
@@ -144,11 +144,10 @@ def _statement(refine: list, ho: pd.DataFrame, fb: pd.DataFrame, K: int) -> str:
         return pair
     peak, start = pair
     n_refine = len(refine)
-    f, fbc = fb[fb.arm == "refine"].set_index("step"), paired_difference([run_curve(r, "feedback") for r in refine], K, 0)
-    feedback = (f"Feedback: on the feedback window, which the loop selects on, the refine arm's mean rank IC is "
-                f"{_f(f.loc[0, 'mean'])} at step 0 and {_f(f.loc[K, 'mean'])} at step {K}. Paired by seed, the change "
-                f"from step 0 to step {K} averages {_f(fbc.mean)} over {_seed_count(fbc.n)}, with 95% interval "
-                f"[{_f(fbc.lo)}, {_f(fbc.hi)}]." + _left_out(fbc, n_refine, 0, K, "feedback"))
+    fbc = paired_difference([run_curve(r, "feedback") for r in refine], K, 0)
+    feedback = (f"Feedback: on the feedback window, which the loop selects on, the change in the refine arm's rank IC "
+                f"from step 0 to step {K}, paired by seed, averages {_f(fbc.mean)} over {_seed_count(fbc.n)}, with 95% "
+                f"interval [{_f(fbc.lo)}, {_f(fbc.hi)}]." + _left_out(fbc, n_refine, 0, K, "feedback"))
     note = ("The start-against-final comparison does not depend on picking a step after the fact, and it is the one "
             "that answers whether refinement hurts the held-out score across seeds. The peak-against-final comparison "
             "does depend on it: the peak step is the largest of several noisy means, chosen after seeing them, so that "
@@ -180,12 +179,13 @@ def render(runs, curves: dict[str, pd.DataFrame], sel: pd.DataFrame) -> str:
     K, g = cfg.budget.max_steps, cfg.generator
     arms = [a for a in ARM_NAMES if any(r.arm == a for r in runs)]
     seeds = {a: sorted(r.seed for r in runs if r.arm == a) for a in arms}
-    ho, fb = curves["heldout"], curves["feedback"]
+    ho = curves["heldout"]
     refine = [r for r in runs if r.arm == "refine"]
     cell = (f"This report covers {len(runs)} finished runs that share one configuration apart from the arm. The split "
             f"is `{cfg.split}` and the home universe is {cfg.universe}; the transfer universes are "
             f"{', '.join(cfg.transfer_to) or 'none'}. The generator is the `{g.provider}` provider with model "
-            f"`{g.model}`. Each refining arm has a budget of {K} refinement steps, so {K + 1} generations in all.")
+            f"`{g.model}`. The frozen arm makes one proposal; the refine arm makes a proposal and then {K} "
+            f"refinements, and the best-of-N arm makes {K + 1} proposals, so those two have {K + 1} generations each.")
     seeds_text = "Seeds present: " + "; ".join(f"{ARM_NAMES[a]} {', '.join(map(str, seeds[a]))}" for a in arms) + "."
     curve_table = _table(["step", *(ARM_NAMES[a] for a in arms)],
                          [[str(k), *(_cell(ho[(ho.arm == a) & (ho.step == k)].iloc[0], len(seeds[a])) for a in arms)]
@@ -196,7 +196,7 @@ def render(runs, curves: dict[str, pd.DataFrame], sel: pd.DataFrame) -> str:
     blocks = [f"# Refinement-count curve: {cfg.split}, {cfg.universe}", *([FAKE_TEXT] if g.provider == "fake" else []),
               "## The cell", cell, ARMS_TEXT, seeds_text, METRIC_TEXT,
               "## Refine arm: does held-out fall while feedback rises?",
-              _statement(refine, ho, fb, K),
+              _statement(refine, ho, K),
               *(x for u in cfg.transfer_to
                 for x in (f"## Transfer to {u}: held-out window",
                           _transfer_statement(runs, refine, curves[transfer_window(u, "heldout")], u, K))),
@@ -209,8 +209,8 @@ def render(runs, curves: dict[str, pd.DataFrame], sel: pd.DataFrame) -> str:
 COST_TEXT = (
     "The numbers cover the generations (the calls to the language model that proposed or refined a candidate) of the "
     "finished runs in this report, summed over each arm's trials from the cost the generator recorded: tokens read, "
-    "tokens written, and seconds spent waiting for the generator. A trial from the fake generator or a failed call "
-    "records no cost and counts as zero. Scoring time is not in them.")
+    "tokens written, and seconds spent waiting for the generator. A trial from the fake generator records no cost and "
+    "counts as zero. Scoring time is not in them.")
 
 
 def cost_table(runs) -> str:

@@ -1,7 +1,13 @@
 """Ledger: views hide the right windows, invalid trials still count, ids are per-candidate, appends are atomic."""
 from __future__ import annotations
-import fcntl, json, multiprocessing as mp, time
+
+import fcntl
+import json
+import multiprocessing as mp
+import time
+
 from harness.ledger.ledger import DiagnosticView, Ledger, LoopView, Trial
+
 
 def test_loop_view_hides_pilot_heldout_and_transfer(tmp_path):
     led = Ledger(tmp_path / "l.jsonl"); tid = led.append(Trial(arm="refine", run="r", step=0, artifact="$close"))
@@ -9,6 +15,13 @@ def test_loop_view_hides_pilot_heldout_and_transfer(tmp_path):
     assert set(LoopView(led).trials()[tid]["scores"]) == {"feedback"}
     assert set(DiagnosticView(led).trials()[tid]["scores"]) == {"feedback", "pilot"}
     assert set(led.trials()[tid]["scores"]) == {"feedback", "pilot", "heldout", "transfer:csi500"}
+
+def test_the_diagnostic_view_is_not_a_loop_view(tmp_path):
+    """A check `isinstance(view, LoopView)` must never accept a view that shows pilot."""
+    led = Ledger(tmp_path / "l.jsonl")
+    assert not isinstance(DiagnosticView(led), LoopView) and isinstance(LoopView(led), LoopView)
+    tid = DiagnosticView(led).append(Trial(arm="refine", run="r", step=0, artifact="$close"))
+    assert DiagnosticView(led).count("r") == 1 and tid in DiagnosticView(led).trials()
 
 def test_hide_accepts_exact_names_and_prefix_patterns(tmp_path):
     led = Ledger(tmp_path / "l.jsonl"); tid = led.append(Trial(arm="refine", run="r", step=0, artifact="$close"))

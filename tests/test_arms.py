@@ -322,6 +322,14 @@ def test_trials_of_another_run_in_the_ledger_do_not_block(tmp_path):
     assert run_arm(cfg_for("frozen"), 0, SpyGenerator(["$close"]), ledger, fake_evaluate(), root=tmp_path / "r")
 
 
+def test_best_so_far_helpers_are_public():
+    from loop import arms
+    recs = [{"valid": True, "scores": {"feedback": {"ok": True, "ic": 0.01}}, "id": "a"},
+            {"valid": True, "scores": {"feedback": {"ok": True, "ic": 0.02}}, "id": "b"},
+            {"valid": False, "scores": {}, "id": "c"}]
+    assert arms.best_so_far(recs)["id"] == "b" and [arms.eligible(r) for r in recs] == [True, True, False]
+    assert "control_generator" in arms.__doc__
+
 def test_fake_evaluate_reverses_pilot():
     ev = fake_evaluate()
     assert math.isclose(ev("$close", SPLIT.pilot, "csi300", "cn").ic, -ev("$close", SPLIT.feedback, "csi300", "cn").ic)

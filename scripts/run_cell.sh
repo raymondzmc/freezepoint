@@ -4,7 +4,9 @@
 #   bash scripts/run_cell.sh configs/cn_frozen.yaml configs/cn_refine.yaml configs/cn_bestofn.yaml
 #
 # Environment: GEN (passed as --provider, e.g. fake), MODEL (passed as --model), SEEDS (default "0 1 2 3 4"),
-# JOBS (runs at once, default 1), RUNS (runs directory, default runs), OUT (report directory, default $RUNS/report).
+# JOBS (runs at once, an integer of at least 1, default 1), RUNS (runs directory, default runs), OUT (report directory,
+# default $RUNS/report). Each run's standard error is appended to $OUT/logs/<name>.log under a line that marks the
+# attempt, so a rerun never overwrites the log of an earlier failure.
 # If any run fails the script says which and where its log is, exits non-zero and writes no report. On INT (Ctrl-C) or
 # TERM it sends TERM to every run it started and to everything those runs started, waits for them, exits non-zero and
 # writes no report. Works with the macOS bash 3.2.
@@ -16,6 +18,9 @@ set -m      # job control: each background run gets its own process group, so on
 export MLFLOW_DISABLE_AGENT_HINT=1      # Qlib imports mlflow, which otherwise logs a line per process
 SEEDS=${SEEDS:-"0 1 2 3 4"}
 JOBS=${JOBS:-1}
+case $JOBS in
+    *[!0-9]* | '' | 0 | 0*) echo "JOBS must be an integer of at least 1 (got '$JOBS')" >&2; exit 2 ;;
+esac
 RUNS=${RUNS:-runs}
 OUT=${OUT:-$RUNS/report}
 LOGS="$OUT/logs"
@@ -29,7 +34,8 @@ EXTRA=()
 run_one() {
     local cfg=$1 seed=$2 name=$3 out
     rm -f "$LOGS/$name.runid"
-    out=$(uv run python -m loop.run "$cfg" --seed "$seed" --runs-dir "$RUNS" ${EXTRA[@]+"${EXTRA[@]}"} 2>"$LOGS/$name.log") || return 1
+    printf '=== attempt started %s: config %s, seed %s ===\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cfg" "$seed" >>"$LOGS/$name.log"
+    out=$(uv run python -m loop.run "$cfg" --seed "$seed" --runs-dir "$RUNS" ${EXTRA[@]+"${EXTRA[@]}"} 2>>"$LOGS/$name.log") || return 1
     printf '%s\n' "$out" | tail -n 1 >"$LOGS/$name.runid"
 }
 
@@ -82,5 +88,6 @@ dirs=()
 for name in "${all_names[@]}"; do dirs+=("$RUNS/$(cat "$LOGS/$name.runid")"); done   # only this invocation's runs
 uv run python -m analysis.report "${dirs[@]}" --out "$OUT" >/dev/null
 
-printf '\nWall-clock time of the cell: %d seconds for %d runs.\n' "$((SECONDS - start))" "${#dirs[@]}" >>"$OUT/cost.md"
+printf '\nWall-clock time of this invocation of scripts/run_cell.sh: %d seconds for %d runs (runs already finished before it were not run again, so their time is not in it).\n' \
+    "$((SECONDS - start))" "${#dirs[@]}" >>"$OUT/cost.md"
 echo "$OUT/report.md"

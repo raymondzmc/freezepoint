@@ -11,8 +11,9 @@ propagates, nothing is logged for it, and no `chosen.json` is written. A ledger 
 is refused before anything is generated, so two loops can never share one run's trials. (4) Only a valid candidate whose feedback score
 is `ok` can be chosen; ties keep the earlier candidate (keep-if-strictly-better on `ic`).
 
-Not acted on in this plan: `verifier.window_days` (the whole feedback window is scored) and `budget.tokens_per_arm`
-(the budget is counted in generations); both are carried in the config and so in the run id. A stopping rule other
+Not acted on in this plan: `verifier.window_days` (the whole feedback window is scored), `budget.tokens_per_arm`
+(the budget is counted in generations) and `control_generator` (no arm uses a control generator yet); all three are
+carried in the config and so in the run id. A stopping rule other
 than `none`, or a verifier metric other than `ic`, raises."""
 from __future__ import annotations
 
@@ -30,19 +31,20 @@ from loop.generator import FEEDBACK_KEYS, Generator
 def _feedback(rec: dict) -> dict:
     return rec["scores"].get("feedback") or {}
 
-def _eligible(rec: dict) -> bool:
+def eligible(rec: dict) -> bool:
+    """A valid candidate whose feedback score is ok: the only kind that can be the best so far or be chosen."""
     return bool(rec["valid"] and _feedback(rec).get("ok"))
 
-def _best(recs: list[dict]) -> dict | None:
+def best_so_far(recs: list[dict]) -> dict | None:
     """The first candidate with the highest feedback ic among the eligible ones (greedy keep-if-strictly-better)."""
     best = None
     for r in recs:
-        if _eligible(r) and (best is None or _feedback(r)["ic"] > _feedback(best)["ic"]): best = r
+        if eligible(r) and (best is None or _feedback(r)["ic"] > _feedback(best)["ic"]): best = r
     return best
 
 def _history(recs: list[dict]) -> list[dict]:
     """One entry per earlier candidate: its ic when it scored, else why it did not (validator or backtest)."""
-    return [{"expr": r["artifact"], "ic": _feedback(r)["ic"]} if _eligible(r) else
+    return [{"expr": r["artifact"], "ic": _feedback(r)["ic"]} if eligible(r) else
             {"expr": r["artifact"], "error": r["error"] if not r["valid"] else _feedback(r).get("reason", "")}
             for r in recs]
 
@@ -101,7 +103,7 @@ def run_arm(cfg: RunConfig, seed: int, gen: Generator, ledger: Ledger, evaluate=
     elif cfg.arm == "refine":
         for step in range(cfg.budget.max_steps + 1):
             recs = r.seen()
-            best = _best(recs)
+            best = best_so_far(recs)
             if best is None: r.propose(step, seed)      # nothing to refine yet: a fresh proposal, same budget
             else: r.refine(step, best, recs)
     elif cfg.arm == "bestofn":
@@ -109,7 +111,7 @@ def run_arm(cfg: RunConfig, seed: int, gen: Generator, ledger: Ledger, evaluate=
             r.propose(i, seed + i)
     else:
         raise ValueError(f"unknown arm {cfg.arm!r}")
-    chosen = _best(r.seen())
+    chosen = best_so_far(r.seen())
     pick = {k: chosen[k] if chosen else None for k in ("id", "artifact", "step")}
     out = {"id": pick["id"], "artifact": pick["artifact"], "arm": cfg.arm, "run": r.run, "seed": seed,
            "step": pick["step"]}

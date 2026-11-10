@@ -42,6 +42,21 @@ def test_a_failing_run_fails_the_script_and_writes_no_report(tmp_path):
     assert "seed 9 is not one of the config's seeds" in log.read_text()
 
 
+@pytest.mark.parametrize("jobs", ["0", "-1", "two", "1.5", "01x"])
+def test_jobs_must_be_a_positive_integer(tmp_path, jobs):
+    p = run_script(tmp_path, tiny_configs(tmp_path)[:1], SEEDS="0", JOBS=jobs)
+    assert p.returncode != 0 and "JOBS" in p.stderr and not (tmp_path / "runs").exists()
+
+
+def test_a_rerun_keeps_the_earlier_failures_log(tmp_path):
+    cfgs = tiny_configs(tmp_path)[:1]
+    for _ in range(2):
+        assert run_script(tmp_path, cfgs, SEEDS="9", JOBS="1").returncode != 0
+    (log,) = (tmp_path / "out" / "logs").glob("*.log")
+    text = log.read_text()
+    assert text.count("seed 9 is not one of the config's seeds") == 2 and text.count("=== attempt started") == 2
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -98,5 +113,5 @@ def test_tiny_cell_end_to_end(tmp_path):
     assert all((out / f).is_file() for f in ("report.md", "curve.csv", "selection.csv", "cost.md"))
     assert "fake generator" in (out / "report.md").read_text()
     assert p.stdout.splitlines()[-1] == str(out / "report.md")
-    assert "Wall-clock time of the cell:" in (out / "cost.md").read_text()
+    assert "Wall-clock time of this invocation of scripts/run_cell.sh:" in (out / "cost.md").read_text()
     assert len(list((out / "logs").glob("*.log"))) == 6

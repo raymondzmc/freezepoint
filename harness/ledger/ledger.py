@@ -9,9 +9,15 @@ reads it: the loop's view (LoopView) hides it, along with `heldout`, `forward` a
 toward the trial total. Appends and reads are serialised with flock, so parallel writers never interleave
 and a reader never parses a half-written line, even for records larger than the file buffer."""
 from __future__ import annotations
-import fcntl, hashlib, json, pathlib, time
+
+import fcntl
+import hashlib
+import json
+import pathlib
+import time
 from contextlib import contextmanager
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
+
 
 def _sha(s: str) -> str: return hashlib.sha256(s.encode()).hexdigest()[:16]
 
@@ -71,17 +77,22 @@ class Ledger:
                 r["scores"] = {w: m for w, m in r.get("scores", {}).items() if not _hidden(w, hide)}; out[r["id"]] = r
         return out
     def count(self, run=None):
-        """the trial count the deflated Sharpe ratio needs: every candidate ever scored, not the ones kept"""
+        """the trial count the deflated Sharpe ratio needs: every candidate proposed, valid or not, not the ones kept"""
         return sum(1 for r in self.records() if "artifact" in r and (run is None or r["run"] == run))
 
-class LoopView:
-    """what the refinement loop is allowed to see: the ledger without pilot, held-out, forward or transfer scores"""
-    HIDE = Ledger.SECRET + ("transfer:*",)
+class _View:
+    """the ledger with the windows in HIDE left out"""
+    HIDE: tuple = ()
     def __init__(self, ledger: Ledger): self._l = ledger
     def append(self, trial): return self._l.append(trial)
     def trials(self): return self._l.trials(hide=self.HIDE)
     def count(self, run=None): return self._l.count(run)
 
-class DiagnosticView(LoopView):
-    """the diagnostic's view: pilot is visible, held-out, forward and transfer scores are not"""
+class LoopView(_View):
+    """what the refinement loop is allowed to see: the ledger without pilot, held-out, forward or transfer scores"""
+    HIDE = Ledger.SECRET + ("transfer:*",)
+
+class DiagnosticView(_View):
+    """the diagnostic's view: pilot is visible, held-out, forward and transfer scores are not. Not a LoopView, so a
+    check `isinstance(view, LoopView)` can never accept a view that shows pilot."""
     HIDE = ("heldout", "forward", "transfer:*")

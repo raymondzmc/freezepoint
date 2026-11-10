@@ -7,7 +7,7 @@ steps `0..n-1` once each (what two live loops appending to one run would leave) 
 directories (and the fields or the steps found), so smoke runs can never be averaged with real ones. So do a run
 without `provenance.json` and runs whose provenance differs in a field of `loop.provenance.COMPARED` (prompts, source,
 lock files, split windows; the git commit is not compared). (2) The candidate a run holds after step `k`
-is chosen by the rule the arms use (`loop.arms._best`: the first highest feedback ic among the valid trials with an
+is chosen by the rule the arms use (`loop.arms.best_so_far`: the first highest feedback ic among the valid trials with an
 ok feedback score), always on feedback ic, whatever window and metric are read off it. (3) A missing, failed or null
 score is NaN and is left out of the mean and of `n`; it is never read as zero.
 
@@ -27,7 +27,7 @@ from scipy import stats
 from harness.ledger.ledger import Ledger
 from harness.ledger.stats import deflated_sharpe, pbo_cscv
 from loop import config, provenance
-from loop.arms import _best, _eligible
+from loop.arms import best_so_far, eligible
 
 PBO_BLOCKS = 8
 CURVE_COLUMNS = ["arm", "step", "mean", "lo", "hi", "n"]
@@ -120,9 +120,10 @@ def _value(rec: dict | None, window: str, metric: str) -> float:
 
 def run_curve(run: Run, window: str = "heldout", metric: str = "ic") -> list[float]:
     """`scores[window][metric]` of the candidate `run` holds after each step `0..max_steps` (NaN when none); for the
-    frozen arm, its one proposal's value on every step."""
+    frozen arm, its one proposal's value on every step, which is NaN on every step when that proposal is invalid or its
+    feedback score failed (it holds nothing then)."""
     steps = range(run.cfg.budget.max_steps + 1)
-    held = [_value(_best([t for t in run.trials if t["step"] <= k]), window, metric) for k in steps]
+    held = [_value(best_so_far([t for t in run.trials if t["step"] <= k]), window, metric) for k in steps]
     return [held[0]] * len(steps) if run.arm == "frozen" else held
 
 
@@ -215,6 +216,6 @@ def selection_stats(run_dirs) -> pd.DataFrame:
     their common dates; NaN for fewer than two trials or fewer than 8 common days."""
     rows = []
     for r in load_cell(run_dirs):
-        valid = [t for t in r.trials if _eligible(t)]
+        valid = [t for t in r.trials if eligible(t)]
         rows.append((r.run, r.arm, r.seed, r.n_trials, len(valid), _dsr(r, valid), _pbo(valid)))
     return pd.DataFrame(rows, columns=SELECTION_COLUMNS)
