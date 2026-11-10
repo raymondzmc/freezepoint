@@ -35,18 +35,22 @@ def cfg_for(arm, max_steps=3, provider="api"):
                                    budget=replace(BASE.budget, max_steps=max_steps, n_candidates=max_steps + 1)))
 
 
-def trial(fb=UNSCORED, ho=0.0, valid=True, ls=None, dates=None, cost=None):
+def trial(fb=UNSCORED, ho=0.0, valid=True, ls=None, dates=None, cost=None, tr=None):
     """One candidate: feedback ic `fb` (None: a failed score), held-out ic `ho` (None: failed), its daily long-short
-    series `ls` on `dates` (defaults: a random series on all of DATES), and the generation's `cost` dict."""
-    return {"fb": fb, "ho": ho, "valid": valid, "ls": ls, "dates": dates, "cost": cost}
+    series `ls` on `dates` (defaults: a random series on all of DATES), the generation's `cost` dict, and `tr`, the
+    held-out ic per transfer universe (default: csi500 gets `ho`, sp500 nothing)."""
+    return {"fb": fb, "ho": ho, "valid": valid, "ls": ls, "dates": dates, "cost": cost, "tr": tr}
 
 
-def record(ic, ls=None, dates=None):
+NAMES = {"csi500": 480.0, "sp500": 360.0}    # names per day each transfer universe's synthetic scores record
+
+
+def record(ic, ls=None, dates=None, n_names=nan):
     if ic is None:
         return score_record(FactorScore(False, "failed on purpose", nan, nan, nan, nan, nan, 0, [], []))
     ls = list(ls) if ls is not None else [ic] * len(DATES)
     dates = list(dates) if dates is not None else DATES[:len(ls)]
-    return score_record(FactorScore(True, "", ic, 2 * ic, ic / 10, 3 * ic, 0.5, len(ls), ls, dates))
+    return score_record(FactorScore(True, "", ic, 2 * ic, ic / 10, 3 * ic, 0.5, len(ls), ls, dates, n_names))
 
 
 def make_run(root, arm, seed, trials, *, cfg=None, chosen="best", done=True, **cfg_kw):
@@ -70,7 +74,8 @@ def make_run(root, arm, seed, trials, *, cfg=None, chosen="best", done=True, **c
         ledger.score(tid, "feedback", record(t["fb"], ls, t["dates"]))
         ledger.score(tid, "pilot", record(t["fb"]))
         ledger.score(tid, "heldout", record(t["ho"]))
-        ledger.score(tid, "transfer:csi500:heldout", record(t["ho"]))
+        for u, v in (t.get("tr") or {"csi500": t["ho"]}).items():
+            ledger.score(tid, f"transfer:{u}:heldout", record(v, n_names=NAMES[u]))
         if t["valid"] and t["fb"] is not None and (best is None or t["fb"] > best_ic):
             best, best_ic = (tid, expr, step), t["fb"]
     pick = best if chosen == "best" and best else (None, None, None)
@@ -423,6 +428,50 @@ def test_report_cannot_answer_when_held_out_at_the_last_step_has_one_seed(tmp_pa
         p = para(md, label)
         assert "cannot be answered" in p and "only one seed of the refine arm's 2 has a held-out value at both step 0 " \
             "and step 3" in p
+
+
+def transfer_cell(root, home, csi500, sp500=None):
+    """Refine and frozen runs per seed: feedback rises 0.01..0.04; held-out follows `home[seed]` and the transfer
+    windows `csi500[seed]` and `sp500[seed]` (absent: no sp500 score)."""
+    dirs = []
+    for arm in ("frozen", "refine"):
+        for s in home:
+            ts = [trial(fb, home[s][k], tr={"csi500": csi500[s][k], **({"sp500": sp500[s][k]} if sp500 else {})})
+                  for k, fb in enumerate((0.01, 0.02, 0.03, 0.04))]
+            dirs.append(make_run(root, arm, s, ts[:1] if arm == "frozen" else ts))
+    return dirs
+
+
+def section(md, heading):
+    return md.split(f"## {heading}\n")[1].split("\n## ")[0]
+
+
+def test_report_gives_the_paired_statements_for_each_transfer_universe(tmp_path):
+    md = report_md(tmp_path, transfer_cell(tmp_path / "runs", FALL, FALL, FLAT))
+    heads = [ln[3:] for ln in md.splitlines() if ln.startswith("## ")]
+    i = heads.index("Refine arm: does held-out fall while feedback rises?")
+    assert heads[i + 1:i + 3] == ["Transfer to csi500: held-out window", "Transfer to sp500: held-out window"]
+    assert heads[i + 3] == "Held-out curve"
+    home = statement(md)
+    assert "csi500" not in home and "sp500" not in home and "Start against final" in home
+    a, b = section(md, heads[i + 1]), section(md, heads[i + 2])
+    assert "480.0 names per day" in a and "360.0 names per day" in b
+    peak = next(p for p in a.split("\n\n") if p.startswith("Peak against final"))
+    d = np.array([FALL[s][1] - FALL[s][3] for s in FALL])
+    h = stats.t.ppf(0.975, 2) * d.std(ddof=1) / math.sqrt(3)
+    assert f"the csi500 held-out rank IC at step 1 minus that at step 3 averages {d.mean():.4f} over 3 seeds" in peak
+    assert f"half-width {h:.4f}" in peak and "The csi500 held-out score at step 3 is below its peak (step 1," in peak
+    start = next(p for p in a.split("\n\n") if p.startswith("Start against final"))
+    assert "is below its step-0 value by more than the half-width" in start
+    assert "is not below its step-0 value" in next(p for p in b.split("\n\n") if p.startswith("Start against final"))
+    assert "Feedback:" not in a                         # the feedback paragraph is the home universe's alone
+
+
+def test_transfer_statement_without_values_cannot_be_answered(tmp_path):
+    md = report_md(tmp_path, transfer_cell(tmp_path / "runs", FALL, FALL))
+    b = section(md, "Transfer to sp500: held-out window")
+    assert "cannot be answered" in b and "no refine seed has a sp500 held-out value at any step" in b
+    assert "No candidate has a sp500 held-out score that records its names per day." in b
 
 
 def test_report_flags_the_fake_generator(tmp_path):

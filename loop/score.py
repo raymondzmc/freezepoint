@@ -18,10 +18,16 @@ from loop.config import RunConfig, region_of
 TRANSFER_WINDOWS = ("feedback", "pilot", "heldout")
 
 
+def transfer_window(universe: str, window: str) -> str:
+    """The ledger's name for `window` scored on transfer universe `universe`: `transfer:<universe>:<window>`. The one
+    place it is built; `LoopView` hides every name with the `transfer:` prefix."""
+    return f"transfer:{universe}:{window}"
+
+
 def _plan(cfg: RunConfig) -> list[tuple[str, list[tuple[str, str]]]]:
     """(universe, [(window, score name), ...]) in scoring order: the home universe first, then `transfer_to`."""
     plan = [(cfg.universe, [("heldout", "heldout")])]
-    plan += [(u, [(w, f"transfer:{u}:{w}") for w in TRANSFER_WINDOWS]) for u in cfg.transfer_to]
+    plan += [(u, [(w, transfer_window(u, w)) for w in TRANSFER_WINDOWS]) for u in cfg.transfer_to]
     return plan
 
 
