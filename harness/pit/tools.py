@@ -17,6 +17,8 @@ from harness.pit.registry import Registry
 FIELDS = ("$open", "$high", "$low", "$close", "$volume", "$factor")
 _PROVIDERS = {"cn": "cn_data", "us": "us_data"}
 _region: str | None = None
+# One process: Qlib's default 8 workers respawn on every D.features call, ~6.5 s on macOS; with 1, CSI 300 x 4 years takes 1.0-1.4 s.
+_KERNELS = 1
 
 def qlib_init(region: str) -> None:
     """Initialise Qlib for `region` ('cn' or 'us'); a no-op if it is already the current region, a re-init otherwise."""
@@ -25,7 +27,7 @@ def qlib_init(region: str) -> None:
     if _region == region: return
     import qlib
     from qlib.constant import REG_CN, REG_US
-    qlib.init(provider_uri=str(pathlib.Path.home() / ".qlib" / "qlib_data" / _PROVIDERS[region]), region={"cn": REG_CN, "us": REG_US}[region])
+    qlib.init(provider_uri=str(pathlib.Path.home() / ".qlib" / "qlib_data" / _PROVIDERS[region]), region={"cn": REG_CN, "us": REG_US}[region], kernels=_KERNELS)
     _region = region
 
 def _last_base(s: pd.Series) -> float:
