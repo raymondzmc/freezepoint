@@ -6,6 +6,7 @@ import dataclasses
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -159,6 +160,53 @@ def test_no_run_matched_is_an_error(tmp_path):
         r = cli("from-runs", pattern, out)
         assert r.returncode != 0 and "no run" in (r.stderr + r.stdout).lower()
     assert not out.exists()
+
+
+@pytest.mark.parametrize("which", ["chosen.json", "config.yaml"])
+def test_output_directory_that_is_a_run_directory_is_refused(tmp_path, runs, which):
+    """The output argument forgotten: the last run directory would become the output."""
+    _, dirs = runs
+    target = dirs[-1]
+    if which == "config.yaml": (target / "chosen.json").unlink()
+    before = _snapshot(target)
+    r = cli("from-runs", *dirs[:-1], target)
+    assert r.returncode != 0 and "run directory" in r.stderr and str(target) in r.stderr
+    assert _snapshot(target) == before
+
+
+def test_literal_path_that_matches_nothing_is_an_error(tmp_path, runs):
+    root, dirs = runs
+    out = tmp_path / "out"
+    for bad in (root / "no-such-run", root / "report"):
+        if bad.name == "report": (bad / "notes").mkdir(parents=True)
+        r = cli("from-runs", dirs[0], bad, out)
+        assert r.returncode != 0 and str(bad) in r.stderr and "not a run directory" in r.stderr
+    assert not out.exists()
+
+
+def test_two_directories_claiming_one_run_id_are_refused(tmp_path, runs):
+    _, dirs = runs
+    copy = tmp_path / "elsewhere" / dirs[0].name
+    shutil.copytree(dirs[0], copy)
+    out = tmp_path / "out"
+    r = cli("from-runs", *dirs, copy, out)
+    assert r.returncode != 0 and dirs[0].name in r.stderr and str(copy) in r.stderr and "same run id" in r.stderr
+    assert not out.exists()
+
+
+def test_verify_says_the_timestamp_was_not_checked_without_ots(tmp_path, runs, monkeypatch, capsys):
+    root, _ = runs
+    mod = _load_module()
+    out = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["commit.py", "from-runs", str(root / "*"), str(out)])
+    mod.main()
+    (out / "commitment.sha256.ots").write_bytes(b"receipt")
+    monkeypatch.setattr(mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: pytest.fail("ots must not be run"))
+    capsys.readouterr()
+    mod.verify(out)
+    text = capsys.readouterr().out
+    assert "hash matches: True" in text and "timestamp not checked" in text and "uv tool install" in text
 
 
 def test_glob_and_expanded_dirs_agree(tmp_path, runs):
