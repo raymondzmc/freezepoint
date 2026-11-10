@@ -131,15 +131,17 @@ class LocalGenerator:
         self._torch, self.name, self.max_new_tokens, self.last_cost = torch, name, max_new_tokens, {}
         path = MODELS / name
         self._tok = transformers.AutoTokenizer.from_pretrained(path)
-        self._model = transformers.AutoModelForCausalLM.from_pretrained(path, torch_dtype="auto", device_map="auto")
+        self._model = transformers.AutoModelForCausalLM.from_pretrained(path, dtype="auto", device_map="auto")
     def _generate(self, prompt: str, seed: int) -> str:
         t0 = time.monotonic(); self._torch.manual_seed(seed)
-        ids = self._tok.apply_chat_template([{"role": "user", "content": prompt}], add_generation_prompt=True,
-                                            return_tensors="pt").to(self._model.device)
-        out = self._model.generate(ids, max_new_tokens=self.max_new_tokens, do_sample=False)
-        self.last_cost = {"input_tokens": int(ids.shape[-1]), "output_tokens": int(out.shape[-1] - ids.shape[-1]),
+        # transformers 5: `apply_chat_template` returns a BatchEncoding (`return_dict` defaults to True); asked for explicitly.
+        enc = self._tok.apply_chat_template([{"role": "user", "content": prompt}], add_generation_prompt=True,
+                                            return_dict=True, return_tensors="pt").to(self._model.device)
+        n_prompt = enc["input_ids"].shape[-1]
+        out = self._model.generate(**enc, max_new_tokens=self.max_new_tokens, do_sample=False)
+        self.last_cost = {"input_tokens": int(n_prompt), "output_tokens": int(out.shape[-1] - n_prompt),
                           "seconds": time.monotonic() - t0, "model": self.name, "sampling": "greedy"}
-        return parse_expression(self._tok.decode(out[0, ids.shape[-1]:], skip_special_tokens=True))
+        return parse_expression(self._tok.decode(out[0, n_prompt:], skip_special_tokens=True))
     def propose(self, context: str, n: int, seed: int) -> list[str]:
         return [self._generate(render("propose", propose_values(context)), seed) for _ in range(n)]
     def refine(self, expr: str, feedback: dict, history: list[dict], seed: int) -> str:

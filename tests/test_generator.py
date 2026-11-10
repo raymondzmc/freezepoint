@@ -107,6 +107,50 @@ def test_local_generator_names_the_extra_when_libraries_are_absent(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", None)                 # forces ImportError even if installed
     with pytest.raises(ImportError, match="uv sync --extra models"): LocalGenerator("pit-4b-ft-201912")
 
+class FakeTensor:
+    """The slice of a torch tensor the generator touches: `.shape` and `[row, slice]`."""
+    def __init__(self, rows): self.rows = rows
+    @property
+    def shape(self): return (len(self.rows), len(self.rows[0]))
+    def __getitem__(self, key): row, sl = key; return self.rows[row][sl]
+
+class FakeEncoding(dict):
+    """Like transformers 5's BatchEncoding (a mapping with `.to(device)`), which `apply_chat_template` returns."""
+    device = None
+    def to(self, device): self.device = device; return self
+
+def test_local_generator_passes_the_encoding_decodes_new_tokens_only_and_is_greedy(monkeypatch):
+    log = {"seeds": [], "generate": [], "decoded": [], "templates": [], "model_kw": None}
+    reply = "think\n```\nRank($close)\n```"
+    class Tok:
+        @classmethod
+        def from_pretrained(cls, path): log["tok_path"] = path; return cls()
+        def apply_chat_template(self, messages, **kw):
+            log["templates"].append((messages, kw))
+            return FakeEncoding(input_ids=FakeTensor([[1, 2, 3]]), attention_mask=FakeTensor([[1, 1, 1]]))
+        def decode(self, ids, skip_special_tokens=False): log["decoded"].append(list(ids)); return reply
+    class Model:
+        device = "dev"
+        @classmethod
+        def from_pretrained(cls, path, **kw): log["model_kw"] = kw; return cls()
+        def generate(self, *args, **kw):
+            log["generate"].append((args, kw)); return FakeTensor([[1, 2, 3, 7, 8]])
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(manual_seed=log["seeds"].append))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(AutoTokenizer=Tok, AutoModelForCausalLM=Model))
+    g = LocalGenerator("pit-test", max_new_tokens=64)
+    assert g.propose("ctx", 2, 5) == ["Rank($close)", "Rank($close)"]
+    assert log["seeds"] == [5, 5] and log["tok_path"] == generator.MODELS / "pit-test"
+    assert log["model_kw"]["dtype"] == "auto" and "torch_dtype" not in log["model_kw"]
+    messages, kw = log["templates"][0]
+    assert kw["return_dict"] is True and kw["return_tensors"] == "pt" and kw["add_generation_prompt"] is True
+    assert messages == [{"role": "user", "content": render("propose", generator.propose_values("ctx"))}]
+    args, gkw = log["generate"][0]
+    assert args == () and set(gkw) == {"input_ids", "attention_mask", "max_new_tokens", "do_sample"}
+    assert gkw["do_sample"] is False and gkw["max_new_tokens"] == 64
+    assert log["decoded"][0] == [7, 8]                                  # only the newly generated tokens
+    assert g.last_cost["input_tokens"] == 3 and g.last_cost["output_tokens"] == 2 and g.last_cost["sampling"] == "greedy"
+    assert g.refine("$close", {"ic": 0.1}, [], 9) == "Rank($close)" and log["seeds"][-1] == 9
+
 @pytest.mark.api
 def test_api_live_one_proposal():
     out = ApiGenerator("claude-haiku-5-5", None, 1024).propose("csi300, daily, 2018-2021", 1, 0)
