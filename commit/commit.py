@@ -9,7 +9,7 @@ usage: commit.py make <artifacts.json> <config.yaml> <out dir>    writes commitm
        commit.py anchor <out dir>                                 runs `ots stamp` on the sha256 file
        commit.py verify <out dir>                                 recomputes the hash (exit 1 on a mismatch) and,
                                                                   if `ots` and the .ots receipt exist, runs `ots verify`
-A commitment is made once: make and from-runs refuse an out dir that already holds commitment.json,
+from-runs also refuses runs whose generator provider is `fake`. A commitment is made once: make and from-runs refuse an out dir that already holds commitment.json,
 commitment.sha256 or commitment.sha256.ots; a new commitment goes in a new directory. verify also exits 1 when
 `ots verify` fails.
 `ots` is the OpenTimestamps client (pip install opentimestamps-client)."""
@@ -47,9 +47,12 @@ def from_runs(patterns, out):
     if not runs: sys.exit("from-runs: no run directory matched (a run is a directory with chosen.json)")
     unfinished = [r.name for r in runs if not (r / "done").exists()]
     if unfinished: sys.exit("from-runs: refusing unfinished run(s) without `done`: " + ", ".join(unfinished))
+    fake = [r.name for r in runs if (yaml.safe_load((r / "config.yaml").read_text()).get("generator") or {}).get("provider") == "fake"]
+    if fake: sys.exit("from-runs: refusing fake-generator run(s): " + ", ".join(fake) + "; fake-generator runs are pipeline checks and are never committed")
     chosen = sorted((json.loads((r / "chosen.json").read_text()) for r in runs), key=lambda c: c["run"])
     configs = {json.loads((r / "chosen.json").read_text())["run"]: yaml.safe_load((r / "config.yaml").read_text())
                for r in runs}
+    print(f"from-runs: committing {len(runs)} runs:", *sorted(r.name for r in runs), sep="\n  ")
     _write({"artifacts": chosen, "configs": configs, "made": _now()}, out)
 
 def anchor(out):

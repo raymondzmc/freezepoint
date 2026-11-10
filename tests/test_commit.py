@@ -33,8 +33,12 @@ def cli(*args, cwd=ROOT):
                           check=False, capture_output=True, text=True, cwd=cwd, env=env)
 
 
-def make_run(root, seed, *, arm="refine", artifact="Mean($close, 5)/$close", done=True, chosen=True, nothing=False):
+def make_run(root, seed, *, arm="refine", artifact="Mean($close, 5)/$close", done=True, chosen=True, nothing=False,
+             fake=False):
     cfg = lcfg.load(ROOT / "configs" / f"cn_{arm}.yaml")
+    if fake:
+        g = dataclasses.replace(cfg.generator, provider="fake", model="fake", revision="fake", exprs=("$close",))
+        cfg = dataclasses.replace(cfg, generator=g)
     cfg = dataclasses.replace(cfg, seeds=(seed,))
     d = lcfg.run_dir(cfg, seed, root=root)
     if chosen:
@@ -102,6 +106,18 @@ def test_unfinished_run_is_refused_and_nothing_written(tmp_path):
     r = cli("from-runs", root / "*", out)
     assert r.returncode != 0 and bad.name in (r.stderr + r.stdout)
     assert not out.exists() or not any(out.iterdir())
+
+
+def test_fake_generator_run_is_refused_and_nothing_written(tmp_path):
+    root = tmp_path / "runs"
+    make_run(root, 0)
+    fake = make_run(root, 1, fake=True)
+    out = tmp_path / "out"
+    r = cli("from-runs", root / "*", out)
+    assert r.returncode != 0 and fake.name in r.stderr and "fake" in r.stderr and "never committed" in r.stderr
+    assert not out.exists() or not any(out.iterdir())
+    ok = cli("from-runs", make_run(root, 2), tmp_path / "out2")    # real runs still work
+    assert ok.returncode == 0 and (tmp_path / "out2" / "commitment.json").exists()
 
 
 def test_aborted_and_non_run_directories_are_ignored(tmp_path):

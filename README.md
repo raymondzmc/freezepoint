@@ -84,11 +84,13 @@ Running the same command again is safe. A run with `done` is left alone. A run t
 
 A cell is the controlled comparison for one setting: the three arms, one config each, times the seeds (five by default), so fifteen runs, followed by the report over exactly those runs.
 
-First run the smoke cell, which uses the fake generator and no API. It takes some minutes on a laptop and checks that every stage works:
+First run the smoke cell, which uses the fake generator and no API and checks that every stage works. It goes in its own runs directory so that fake runs and real runs never share one:
 
 ```bash
-GEN=fake bash scripts/run_cell.sh configs/cn_frozen.yaml configs/cn_refine.yaml configs/cn_bestofn.yaml
+GEN=fake JOBS=5 RUNS=runs/smoke bash scripts/run_cell.sh configs/cn_frozen.yaml configs/cn_refine.yaml configs/cn_bestofn.yaml
 ```
+
+On an Apple-silicon laptop this command, fifteen runs and 215 generations at `JOBS=5`, finished in 236 seconds; other settings were not timed. A real cell is slower, because every candidate is a different expression (the fake generator repeats seven, and repeated scores are cached within a run) and each generation waits on the API.
 
 Then a real cell, with a model on the Anthropic API:
 
@@ -107,7 +109,7 @@ The script takes these environment variables:
 | `RUNS` | the runs directory | `runs` |
 | `OUT` | the report directory | `$RUNS/report` |
 
-It runs every config for every seed, keeps each run's standard error in `$OUT/logs/`, and passes exactly the run directories it produced to `python -m analysis.report`; it never reads other runs that happen to sit in `$RUNS`, so several cells can share one directory if each has its own `OUT`. If any run fails the script names the config and seed and the log, exits non-zero and writes no report. Scoring happens inside each run, so after a failure you can run the same command again: finished runs are left alone and a run that died while scoring is scored without generating again. The last line printed is the path of `report.md`.
+It runs every config for every seed, keeps each run's standard error in `$OUT/logs/`, and passes exactly the run directories it produced to `python -m analysis.report`; it never reads other runs that happen to sit in `$RUNS`, so several cells can share one directory if each has its own `OUT` (smoke runs still get their own `RUNS`, as above). If any run fails the script names the config and seed and the log, exits non-zero and writes no report. Scoring happens inside each run, so after a failure you can run the same command again: finished runs are left alone and a run that died while scoring is scored without generating again. The last line printed is the path of `report.md`.
 
 The report directory holds:
 
@@ -136,11 +138,13 @@ A report from the fake generator, which returns expressions from a fixed list, i
 After a cell is finished, its chosen artifacts and configs are hashed into a commitment. The commitment file stays private; only the hash is published.
 
 ```bash
-uv run python commit/commit.py from-runs "runs/refine-*" "runs/frozen-*" "runs/bestofn-*" runs/commitment-cn-2018-2023
+uv run python commit/commit.py from-runs runs/<run_id> runs/<run_id> ... runs/commitment-cn-2018-2023
 uv run python commit/commit.py verify runs/commitment-cn-2018-2023
 ```
 
-`from-runs` takes finished run directories or quoted globs (each with `done`; `.aborted-` directories are skipped) and writes `commitment.json` and `commitment.sha256` into the output directory. A commitment is written once: the command refuses an output directory that already holds one, so a new commitment goes in a new directory. `verify` recomputes the hash and exits non-zero on a mismatch, and, when the OpenTimestamps client and a receipt exist, checks the receipt too.
+Pass the real cell's run directories (the report's `selection.csv` lists their ids). A glob such as `"runs/*"` is expanded by the command and matches every finished run under the directory it names, so only use one on a directory that holds nothing but the cell you mean to commit. The command refuses unfinished runs and fake-generator runs, which are pipeline checks and are never committed. Check the list of runs it reports before you anchor.
+
+`from-runs` takes finished run directories or globs (each with `done`; `.aborted-` directories are skipped) and writes `commitment.json` and `commitment.sha256` into the output directory. A commitment is written once: the command refuses an output directory that already holds one, so a new commitment goes in a new directory. `verify` recomputes the hash and exits non-zero on a mismatch, and, when the OpenTimestamps client and a receipt exist, checks the receipt too.
 
 ```bash
 uv run python commit/commit.py anchor runs/commitment-cn-2018-2023
