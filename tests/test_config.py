@@ -170,6 +170,16 @@ def test_invalid_config_raises(tmp_path, name):
         C.load(write(tmp_path, d))
 
 
+def test_bestofn_on_the_local_generator_is_refused(tmp_path):
+    d = raw("bestofn")
+    d["generator"]["provider"] = "local"
+    with pytest.raises(ValueError, match="greedily"):
+        C.load(write(tmp_path, d))
+    d = raw("refine")
+    d["generator"]["provider"] = "local"
+    assert C.load(write(tmp_path, d)).generator.provider == "local"
+
+
 def test_fake_provider_with_exprs_loads(tmp_path):
     d = raw()
     _fake(d)

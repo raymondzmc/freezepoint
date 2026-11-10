@@ -93,6 +93,19 @@ def test_infinite_values_are_missing():
         return out
     fs = score_frame(make_frame(factor=with_inf))
     assert fs.ok and fs.n_days == 69 and fs.ic == pytest.approx(1.0)
+def test_n_names_is_the_mean_number_of_valid_names_per_kept_day():
+    def thinned(y, idx):
+        out = y.copy(); d = idx.get_level_values(1); names = idx.get_level_values(0)
+        out[(d == d[0]) & (names >= "S010")] = np.nan   # first day: 10 valid names, dropped
+        out[(d == d[1]) & (names >= "S035")] = np.nan   # second day: 35 valid names, kept
+        return out
+    fs = score_frame(make_frame(factor=thinned))
+    assert fs.ok and fs.n_days == 69 and fs.n_names == pytest.approx((35 + 68 * 40) / 69)
+    assert score_dict(fs)["n_names"] == pytest.approx(fs.n_names)
+def test_failed_score_has_nan_n_names_and_null_in_the_record():
+    fs = score_frame(make_frame(n_days=45))
+    assert math.isnan(fs.n_names) and score_dict(fs)["n_names"] is None
+    assert backtest.score_record(fs)["n_names"] is None
 def test_static_ranking_has_zero_turnover():
     fs = score_frame(make_frame(factor=lambda y, i: np.repeat(np.arange(40.0), 70)))
     assert fs.ok and fs.turnover == 0.0

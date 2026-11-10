@@ -4,7 +4,8 @@ Guarantees. (1) `evaluate` is the only place a candidate is executed for scoring
 unvalidated reaches `D.features` through it (the label is appended here and reads the future by design). (2) The
 arithmetic is a pure function of an (instrument, datetime) frame, `score_frame`, so it is testable without data.
 (3) Scores are deterministic and memoised in-process. (4) A failed score has NaN metrics and no series, so a failure
-can never be mistaken for a weak result; `score_dict` writes strict JSON (non-finite floats become null). (5) Exactly
+can never be mistaken for a weak result; `score_dict` writes strict JSON (non-finite floats become null). Every score
+carries `n_names`, the mean number of valid names per kept day (NaN, so null in the ledger, for a failed score). (5) Exactly
 one kind of exception becomes a failed score: one raised while Qlib loads a validated expression (`_load`; the
 reason names it). Missing region data (`qlib_init`'s check that the calendar is present, run before
 validation and outside any `try`) and an unknown region raise out of `evaluate`, so a data fault can never be recorded
@@ -40,10 +41,11 @@ class FactorScore:
     n_days: int
     daily_ls: list[float]
     dates: list[str] = field(default_factory=list)   # ISO dates of the kept days, aligned with daily_ls
+    n_names: float = float("nan")   # mean number of valid names per kept day; NaN for a failed score
 
 def _failed(reason: str) -> FactorScore:
     nan = float("nan")
-    return FactorScore(False, reason, nan, nan, nan, nan, nan, 0, [], [])
+    return FactorScore(False, reason, nan, nan, nan, nan, nan, 0, [], [], nan)
 
 def _ratio(a: float, b: float) -> float:
     return a / b if b > 0 and math.isfinite(b) else float("nan")
@@ -66,7 +68,7 @@ def score_frame(df: pd.DataFrame, quantile: float = 0.2) -> FactorScore:
     dates = df.index.get_level_values(1)
     order = np.argsort(dates.to_numpy(), kind="stable")
     cuts = np.flatnonzero(np.diff(dates.to_numpy()[order]) != 0) + 1
-    ics, ls, kept, tops = [], [], [], []
+    ics, ls, kept, tops, sizes = [], [], [], [], []
     for rows in np.split(order, cuts):
         ok = np.isfinite(f_all[rows]) & np.isfinite(y_all[rows])
         if ok.sum() < MIN_NAMES: continue
@@ -78,13 +80,13 @@ def score_frame(df: pd.DataFrame, quantile: float = 0.2) -> FactorScore:
         top = np.lexsort((names, -f))[:k]       # highest value first, ties by instrument name
         bottom = np.lexsort((names, f))[:k]
         ics.append(ic); ls.append(float(y[top].mean() - y[bottom].mean()))
-        kept.append(str(pd.Timestamp(dates[rows[0]]).date())); tops.append(frozenset(names[top]))
+        kept.append(str(pd.Timestamp(dates[rows[0]]).date())); tops.append(frozenset(names[top])); sizes.append(len(r))
     if not ics: return _failed("no IC: the expression is constant or NaN across the universe")
     if len(ics) < MIN_DAYS: return _failed(f"only {len(ics)} usable days, below the floor of {MIN_DAYS}")
     turn = [len(b - a) / len(b) for a, b in itertools.pairwise(tops)]
     ic_mean, ls_mean = float(np.mean(ics)), float(np.mean(ls))
     return FactorScore(True, "", ic_mean, _ratio(ic_mean, _std(ics)), ls_mean, _ratio(ls_mean, _std(ls)) * math.sqrt(252),
-                       float(np.mean(turn)), len(ics), ls, kept)
+                       float(np.mean(turn)), len(ics), ls, kept, float(np.mean(sizes)))
 
 def _load(expr: str, window: Window, universe: str, region: str) -> pd.DataFrame:
     """One `D.features` call: the expression and the label over the universe's membership through time. Qlib must

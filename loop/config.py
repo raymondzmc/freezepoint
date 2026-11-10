@@ -120,6 +120,10 @@ def validate(cfg: RunConfig) -> RunConfig:
         raise ValueError("the Messages API no longer accepts sampling parameters, so generator.temperature must be "
                          f"null for the api provider (got {g.temperature!r}); a config that says otherwise would "
                          "misdescribe the run")
+    if cfg.arm == "bestofn" and g.provider == "local":
+        raise ValueError("arm 'bestofn' cannot use generator.provider 'local': the local generator decodes greedily, so "
+                         "its proposals for one prompt would be identical and best-of-N would log the same candidate "
+                         f"{cfg.budget.n_candidates} times")
     if g.effort is not None and (not isinstance(g.effort, str) or g.effort not in EFFORTS):
         raise ValueError(f"generator.effort must be null (the API's default) or one of {EFFORTS}, got {g.effort!r}")
     if g.provider == "fake" and not g.exprs:
