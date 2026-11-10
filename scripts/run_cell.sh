@@ -5,8 +5,11 @@
 #
 # Environment: GEN (passed as --provider, e.g. fake), MODEL (passed as --model), SEEDS (default "0 1 2 3 4"),
 # JOBS (runs at once, default 1), RUNS (runs directory, default runs), OUT (report directory, default $RUNS/report).
-# If any run fails the script says which and where its log is, exits non-zero and writes no report.
+# If any run fails the script says which and where its log is, exits non-zero and writes no report. On INT (Ctrl-C) or
+# TERM it sends TERM to every run it started and to everything those runs started, waits for them, exits non-zero and
+# writes no report. Works with the macOS bash 3.2.
 set -euo pipefail
+set -m      # job control: each background run gets its own process group, so one signal reaches the whole run
 
 [ "$#" -ge 1 ] || { echo "usage: bash scripts/run_cell.sh <config> [<config> ...]" >&2; exit 2; }
 
@@ -42,6 +45,19 @@ reap() {    # wait for the oldest background run and note a failure
     fi
     pids=(${pids[@]+"${pids[@]:1}"}); names=(${names[@]+"${names[@]:1}"}); labels=("${labels[@]:1}")
 }
+
+# On INT or TERM: end every run still going. A background job ignores SIGINT, and killing only the job's own shell
+# would leave its `uv run python` behind, so TERM goes to each run's process group.
+stop() {
+    trap - INT TERM
+    echo "caught SIG$1: stopping ${#pids[@]} run(s) still going" >&2
+    for p in ${pids[@]+"${pids[@]}"}; do kill -TERM -- "-$p" 2>/dev/null || true; done
+    for p in ${pids[@]+"${pids[@]}"}; do wait "$p" 2>/dev/null || true; done
+    echo "stopped; no report written" >&2
+    if [ "$1" = INT ]; then exit 130; else exit 143; fi
+}
+trap 'stop INT' INT
+trap 'stop TERM' TERM
 
 start=$SECONDS
 i=0

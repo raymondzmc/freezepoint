@@ -2,8 +2,9 @@
 one effective config that differs only in `arm`.
 
 Guarantees. (1) Every function takes only one finished cell: a directory without `done`, runs whose configs differ in
-anything but `arm`, and two runs with the same arm and seed each raise ValueError naming the directories (and the
-fields that differ), so smoke runs can never be averaged with real ones. (2) The candidate a run holds after step `k`
+anything but `arm`, two runs with the same arm and seed, and a run whose trials are not exactly its arm's budget with
+steps `0..n-1` once each (what two live loops appending to one run would leave) each raise ValueError naming the
+directories (and the fields or the steps found), so smoke runs can never be averaged with real ones. (2) The candidate a run holds after step `k`
 is chosen by the rule the arms use (`loop.arms._best`: the first highest feedback ic among the valid trials with an
 ok feedback score), always on feedback ic, whatever window and metric are read off it. (3) A missing, failed or null
 score is NaN and is left out of the mean and of `n`; it is never read as zero.
@@ -64,8 +65,19 @@ def _load_run(d: Path) -> Run:
         raise ValueError(f"{d}: chosen.json names run {rid!r} (arm {chosen['arm']!r}), but config.yaml with seed "
                          f"{seed} gives {config.run_id(cfg, seed)!r}")
     ledger = Ledger(d / "ledger.jsonl")
+    steps = sorted(r["step"] for r in ledger.records() if "artifact" in r and r["run"] == rid)
+    n = budget(cfg)
+    if steps != list(range(n)):
+        raise ValueError(f"{d}: run {rid} has {len(steps)} trials with steps {steps}, but its {cfg.arm} arm's budget is "
+                         f"{n} trials with steps 0..{n - 1} once each; a run like this was not made by one invocation "
+                         "of one arm and is not analysed")
     trials = sorted((t for t in ledger.trials().values() if t["run"] == rid), key=lambda t: t["step"])
     return Run(d, cfg, rid, seed, chosen["id"], trials, ledger.count(rid))
+
+
+def budget(cfg: config.RunConfig) -> int:
+    """The number of trials an arm generates: 1 for frozen, `max_steps + 1` for refine, `n_candidates` for best-of-N."""
+    return {"frozen": 1, "refine": cfg.budget.max_steps + 1, "bestofn": cfg.budget.n_candidates}[cfg.arm]
 
 
 def load_cell(run_dirs) -> list[Run]:

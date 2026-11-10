@@ -174,16 +174,16 @@ def test_interval_matches_a_hand_computation(tmp_path):
 # ---- inputs must be one finished cell ---------------------------------------------------------------------------
 
 def test_unfinished_run_raises(tmp_path):
-    ok = make_run(tmp_path, "refine", 0, [trial(0.01)])
-    bad = make_run(tmp_path, "refine", 1, [trial(0.01)], done=False)
+    ok = make_run(tmp_path, "refine", 0, [trial(0.01)] * 4)
+    bad = make_run(tmp_path, "refine", 1, [trial(0.01)] * 4, done=False)
     for f in (curve, selection_stats, lambda d: rep.report(d, tmp_path / "out")):
         with pytest.raises(ValueError, match=bad.name):
             f([ok, bad])
 
 
 def test_two_cells_mixed_raise_and_name_the_fields(tmp_path):
-    a = make_run(tmp_path, "refine", 0, [trial(0.01)])
-    b = make_run(tmp_path, "bestofn", 0, [trial(0.01)], max_steps=4)
+    a = make_run(tmp_path, "refine", 0, [trial(0.01)] * 4)
+    b = make_run(tmp_path, "bestofn", 0, [trial(0.01)] * 5, max_steps=4)
     c = make_run(tmp_path, "frozen", 0, [trial(0.01)], provider="fake")
     with pytest.raises(ValueError, match=r"budget\.max_steps") as e:
         curve([a, b])
@@ -193,13 +193,43 @@ def test_two_cells_mixed_raise_and_name_the_fields(tmp_path):
 
 
 def test_duplicated_arm_and_seed_raises(tmp_path):
-    a = make_run(tmp_path, "refine", 0, [trial(0.01)])
+    a = make_run(tmp_path, "refine", 0, [trial(0.01)] * 4)
     copy = tmp_path / "elsewhere" / a.name
     shutil.copytree(a, copy)
     with pytest.raises(ValueError, match="seed 0"):
         curve([a, copy])
     with pytest.raises(ValueError, match="seed 0"):
         curve([a, a])
+
+
+def extra_trial(d, step, artifact="Std($close, 9)"):
+    """Append one more trial of `d`'s run to its ledger, as a second live loop would have."""
+    Ledger(d / "ledger.jsonl").append(Trial(arm=d.name.split("-")[0], run=d.name, step=step, artifact=artifact))
+    return d
+
+
+@pytest.mark.parametrize("name, build, found", [
+    ("too few", lambda root: make_run(root, "refine", 0, [trial(0.01)] * 3), "3 trials"),
+    ("too many", lambda root: make_run(root, "refine", 0, [trial(0.01)] * 5), "5 trials"),
+    ("duplicated step, too many", lambda root: extra_trial(make_run(root, "refine", 0, [trial(0.01)] * 4), 2),
+     "steps [0, 1, 2, 2, 3]"),
+    ("duplicated step, right count", lambda root: extra_trial(make_run(root, "refine", 0, [trial(0.01)] * 3), 1),
+     "steps [0, 1, 1, 2]"),
+    ("frozen with two", lambda root: make_run(root, "frozen", 0, [trial(0.01)] * 2), "2 trials"),
+    ("best-of-N with three", lambda root: make_run(root, "bestofn", 0, [trial(0.01)] * 3), "3 trials"),
+])
+def test_a_run_whose_trials_do_not_match_its_budget_is_refused(tmp_path, name, build, found):
+    d = build(tmp_path)
+    for f in (curve, selection_stats):
+        with pytest.raises(ValueError, match=d.name) as e:
+            f([d])
+        assert found in str(e.value), str(e.value)
+
+
+def test_a_run_that_matches_its_budget_loads(tmp_path):
+    dirs = [make_run(tmp_path, "frozen", 0, [trial(0.01)]), make_run(tmp_path, "refine", 0, [trial(0.01)] * 4),
+            make_run(tmp_path, "bestofn", 0, [trial(0.01)] * 4)]
+    assert set(selection_stats(dirs).n_trials) == {1, 4}
 
 
 def test_no_run_dirs_raises():
@@ -223,11 +253,12 @@ def test_pbo_is_nan_for_a_frozen_run(tmp_path):
 def test_pbo_aligns_trials_on_common_dates(tmp_path):
     rng = np.random.default_rng(3)
     a, b = rng.normal(0, 0.01, 30), rng.normal(0, 0.01, 35)
-    d = make_run(tmp_path, "refine", 0, [trial(0.01, ls=a, dates=DATES[:30]), trial(0.02, ls=b, dates=DATES[5:])])
+    d = make_run(tmp_path, "refine", 0, [trial(0.01, ls=a, dates=DATES[:30]), trial(0.02, ls=b, dates=DATES[5:])],
+                 max_steps=1)
     expected = pbo_cscv(np.column_stack([a[5:30], b[:25]]), S=8)["pbo"]
     assert selection_stats([d]).iloc[0].pbo == expected
     short = make_run(tmp_path, "refine", 1, [trial(0.01, ls=a[:10], dates=DATES[:10]),
-                                             trial(0.02, ls=b[:10], dates=DATES[5:15])])
+                                             trial(0.02, ls=b[:10], dates=DATES[5:15])], max_steps=1)
     assert np.isnan(selection_stats([short]).iloc[0].pbo)        # 5 common days, fewer than the 8 blocks
 
 

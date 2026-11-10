@@ -2,6 +2,7 @@
 (needs none)."""
 import os
 import pathlib
+import signal
 import subprocess
 import time
 
@@ -40,6 +41,48 @@ def test_a_failing_run_fails_the_script_and_writes_no_report(tmp_path):
     assert "seed 9 is not one of the config's seeds" in log.read_text()
 
 
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+def test_a_signal_stops_every_run_and_writes_no_report(tmp_path, sig):
+    """A stub `uv` first on PATH stands in for the runs: it starts a `sleep` child, records both pids and waits. The
+    script, sent TERM (or INT, which background jobs ignore) while two runs are live, must end them all, exit non-zero
+    and write no report."""
+    stub_dir, pids = tmp_path / "bin", tmp_path / "pids"
+    stub_dir.mkdir()
+    (stub_dir / "uv").write_text(f'#!/bin/bash\nsleep 300 &\necho "$$ $!" >> {pids}\nwait\n')
+    (stub_dir / "uv").chmod(0o755)
+    env = {**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}", "GEN": "fake", "SEEDS": "0 1", "JOBS": "2",
+           "RUNS": str(tmp_path / "runs"), "OUT": str(tmp_path / "out")}
+    p = subprocess.Popen(["bash", "scripts/run_cell.sh", *map(str, tiny_configs(tmp_path))], cwd=ROOT, env=env,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    started = []
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and len(started) < 4:
+            time.sleep(0.1)
+            started = [int(x) for x in pids.read_text().split()] if pids.exists() else []
+        assert len(started) == 4, "two stub runs did not start"
+        p.send_signal(sig)
+        p.wait(timeout=30)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and any(map(_alive, started)):
+            time.sleep(0.1)
+        assert p.returncode != 0
+        assert not (tmp_path / "out" / "report.md").exists()
+        assert not any(map(_alive, started)), "a run outlived the script"
+    finally:
+        if p.poll() is None: p.kill()
+        for pid in started:
+            if _alive(pid): os.kill(pid, signal.SIGKILL)
+
+
 @pytest.mark.data
 def test_tiny_cell_end_to_end(tmp_path):
     if not ((QLIB / "cn_data").exists() and (QLIB / "us_data").exists()): pytest.skip("no Qlib data")
@@ -48,7 +91,8 @@ def test_tiny_cell_end_to_end(tmp_path):
     print(f"tiny cell wall-clock: {time.monotonic() - t0:.1f} s")
     assert p.returncode == 0, p.stderr[-4000:]
     done = [d for d in (tmp_path / "runs").iterdir() if (d / "done").is_file()]
-    assert len(done) == 6 and len(list((tmp_path / "runs").iterdir())) == 6
+    assert len(done) == 6 and len([d for d in (tmp_path / "runs").iterdir() if d.is_dir()]) == 6
+    assert len(list((tmp_path / "runs").glob("*.lock"))) == 6                # one lock file per run, left in place
     out = tmp_path / "out"
     assert all((out / f).is_file() for f in ("report.md", "curve.csv", "selection.csv", "cost.md"))
     assert "fake generator" in (out / "report.md").read_text()

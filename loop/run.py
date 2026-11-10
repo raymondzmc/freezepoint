@@ -3,11 +3,16 @@
     python -m loop.run <config> --seed N [--score-only] [--provider P] [--model M] [--runs-dir DIR]
 
 Guarantees. (1) The run id is computed from the config after the overrides, and that effective config is what the
-run directory records. (2) A run's ledger is never appended to by a second attempt, and a finished arm is never
-generated again. A directory with `done` is left alone. One with `chosen.json` but no `done` (the arm finished and only the
-scoring died) has its missing scores filled in and `done` written, with or without `--score-only`. One with neither is
-an arm that died part-way: it is renamed `<run_id>.aborted-<UTC timestamp>` (never deleted) and the run starts fresh,
-or, with `--score-only`, the command refuses. (3) `done` is written
+run directory records. (2) One invocation per run at a time: before it looks at the run directory, every path
+(normal, resume, `--score-only`) takes a non-blocking exclusive `flock` on `<runs-dir>/<run_id>.lock` and holds it for
+the rest of the invocation (the OS releases it when the process ends, however it ends; the file is left in place). If
+another process holds it, the command exits non-zero having changed nothing. Only the no-op on a run that already has
+`done` skips the lock. Under the lock: a directory with `done` is left alone. One with `chosen.json` but no `done` (the
+arm finished and only the scoring died) has its missing scores filled in and `done` written, with or without
+`--score-only`. One with neither is an arm that died part-way (no live process can be writing to it, since none holds
+the lock): it is renamed `<run_id>.aborted-<UTC timestamp>` (never deleted) and the run starts fresh, or, with
+`--score-only`, the command refuses. So a run's ledger is never appended to by a second attempt, a finished arm is never
+generated again, and `run_arm` itself refuses a ledger that already holds a trial of the run. (3) `done` is written
 last and is the only sign that a run is complete; nothing is written to the directory after it. (4) The proposal
 context comes from one point-in-time `universe` call as of the feedback window's end, logged in `calls.jsonl`; the
 trials record that call's line range (0-based, end exclusive) as `tool_log_span`. (5) Standard output carries only
@@ -19,6 +24,7 @@ import argparse
 import contextlib
 import dataclasses
 import datetime as dt
+import fcntl
 import sys
 from pathlib import Path
 
@@ -104,6 +110,20 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
+def acquire_lock(runs: Path, rid: str):
+    """The open lock file `<runs>/<rid>.lock` with a non-blocking exclusive `flock` taken on it, or None when another
+    process holds it. The lock lasts until the file is closed or the process ends, whichever comes first; the file
+    itself is never removed."""
+    runs.mkdir(parents=True, exist_ok=True)
+    f = open(runs / f"{rid}.lock", "a")     # noqa: SIM115 - returned open: closing it releases the lock
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        f.close()
+        return None
+    return f
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -115,6 +135,23 @@ def main(argv: list[str] | None = None) -> int:
         _say(f"error: seed {args.seed} is not one of the config's seeds {list(cfg.seeds)}")
         return 2
     rid = config.run_id(cfg, args.seed)
+    if (args.runs_dir / rid / "done").exists():      # complete: nothing to do, and no lock needed to see it
+        _say(f"{rid}: already complete, nothing to do")
+        print(rid, flush=True)
+        return 0
+    lock = acquire_lock(args.runs_dir, rid)
+    if lock is None:
+        _say(f"error: another invocation of run {rid} is live (it holds {args.runs_dir / (rid + '.lock')}); "
+             "nothing was changed. Wait for it to finish or stop it, then run this again.")
+        return 3
+    try:
+        return _locked(args, cfg, rid)
+    finally:
+        lock.close()
+
+
+def _locked(args, cfg: config.RunConfig, rid: str) -> int:
+    """Everything that looks at or writes the run directory, under the run's lock."""
     d = args.runs_dir / rid
     if (d / "done").exists():
         _say(f"{rid}: already complete, nothing to do")

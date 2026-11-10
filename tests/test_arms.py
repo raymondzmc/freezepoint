@@ -11,7 +11,7 @@ import pytest
 
 from harness import backtest
 from harness.backtest import FactorScore
-from harness.ledger.ledger import Ledger, LoopView
+from harness.ledger.ledger import Ledger, LoopView, Trial
 from harness.pit import tools
 from harness.splits import get as get_split
 from loop import config
@@ -284,6 +284,26 @@ def test_metric_other_than_ic_raises(tmp_path):
     cfg = cfg_for("refine", verifier=replace(BASE.verifier, metric="ls_sharpe"))
     with pytest.raises(ValueError, match="not implemented"):
         run_arm(cfg, 0, SpyGenerator(["$close"]), Ledger(tmp_path / "l.jsonl"), fake_evaluate(), root=tmp_path / "r")
+
+
+@pytest.mark.parametrize("arm", ["frozen", "refine", "bestofn"])
+def test_a_ledger_that_already_holds_this_runs_trials_is_refused(tmp_path, arm):
+    """A second loop appending into the same run would double its trials: run_arm raises before generating."""
+    cfg = cfg_for(arm)
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.append(Trial(arm=arm, run=config.run_id(cfg, 0), step=0, artifact="$close"))
+    ledger.append(Trial(arm=arm, run="another-run", step=0, artifact="$close"))
+    gen = SpyGenerator(["$close"])
+    with pytest.raises(RuntimeError, match="already holds"):
+        run_arm(cfg, 0, gen, ledger, fake_evaluate(), root=tmp_path / "runs")
+    assert gen.calls == [] and ledger.count() == 2
+    assert not (tmp_path / "runs" / config.run_id(cfg, 0) / "chosen.json").exists()
+
+
+def test_trials_of_another_run_in_the_ledger_do_not_block(tmp_path):
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.append(Trial(arm="frozen", run="another-run", step=0, artifact="$close"))
+    assert run_arm(cfg_for("frozen"), 0, SpyGenerator(["$close"]), ledger, fake_evaluate(), root=tmp_path / "r")
 
 
 def test_fake_evaluate_reverses_pilot():

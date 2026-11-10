@@ -7,7 +7,8 @@ best so far, what feedback and history the generator is handed, which candidate 
 `LoopView` shows it, so the loop can never read the pilot, held-out, forward or transfer scores; the pilot score is
 written after each candidate and never read here. (3) Each arm spends exactly its budget of generations (1,
 `max_steps + 1`, `n_candidates`), invalid and failed candidates included. A generator exception is not a candidate: it
-propagates, nothing is logged for it, and no `chosen.json` is written. (4) Only a valid candidate whose feedback score
+propagates, nothing is logged for it, and no `chosen.json` is written. A ledger that already holds a trial of the run
+is refused before anything is generated, so two loops can never share one run's trials. (4) Only a valid candidate whose feedback score
 is `ok` can be chosen; ties keep the earlier candidate (keep-if-strictly-better on `ic`).
 
 Not acted on in this plan: `verifier.window_days` (the whole feedback window is scored) and `budget.tokens_per_arm`
@@ -89,6 +90,9 @@ def run_arm(cfg: RunConfig, seed: int, gen: Generator, ledger: Ledger, evaluate=
     if cfg.verifier.metric != "ic":
         raise ValueError(f"verifier.metric {cfg.verifier.metric!r} is not implemented in this plan; use 'ic'")
     r = _Run(cfg, seed, gen, ledger, evaluate, context, tool_log_span)
+    if any(t["run"] == r.run for t in r.view.trials().values()):
+        raise RuntimeError(f"{ledger.path} already holds trials of run {r.run}; a run's ledger is appended to by one "
+                           "arm only, so nothing was generated")
     if cfg.arm == "frozen":
         r.propose(0, seed)
     elif cfg.arm == "refine":

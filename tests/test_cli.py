@@ -1,5 +1,6 @@
 """Tests for the command line. The data-free tests call `main` with the arm, the scorer and the proposal context
 stubbed; the `data` test runs `python -m loop.run` end to end with the fake generator."""
+import fcntl
 import json
 import os
 import pathlib
@@ -58,6 +59,80 @@ def main(*argv):
     return cli.main([str(a) for a in argv])
 
 
+def hold_lock(runs, rid):
+    """Take the run's lock the way a live invocation holds it; the caller closes the file to release it."""
+    runs.mkdir(parents=True, exist_ok=True)
+    f = open(runs / f"{rid}.lock", "a")     # noqa: SIM115 - held across the test
+    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return f
+
+
+def lock_is_free(runs, rid) -> bool:
+    with open(runs / f"{rid}.lock", "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        fcntl.flock(f, fcntl.LOCK_UN)
+        return True
+
+
+def snapshot(root):
+    return {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+@pytest.mark.parametrize("state", ["fresh", "unfinished", "arm finished", "score-only"])
+def test_a_second_invocation_on_a_held_lock_exits_non_zero_and_changes_nothing(tmp_path, stubs, capsys, state):
+    cfg = write_config(tmp_path)
+    runs = tmp_path / "runs"
+    rid = config.run_id(fake_cfg(cfg), 0)
+    d = runs / rid
+    if state != "fresh":
+        d.mkdir(parents=True)
+        (d / "ledger.jsonl").write_text('{"live": "another invocation is writing here"}\n')
+    if state in ("arm finished", "score-only"):
+        (d / "chosen.json").write_text("{}\n")
+    held = hold_lock(runs, rid)
+    try:
+        before = snapshot(runs)
+        extra = ["--score-only"] if state == "score-only" else []
+        assert main(cfg, "--seed", 0, "--provider", "fake", *extra, "--runs-dir", runs) != 0
+        out, err = capsys.readouterr()
+        assert out == "" and "another invocation" in err and rid in err
+        assert stubs == [] and snapshot(runs) == before
+        assert sorted(p.name for p in runs.iterdir()) == sorted([f"{rid}.lock", *([rid] if state != "fresh" else [])])
+    finally:
+        held.close()
+
+
+def test_the_lock_is_released_when_main_returns_and_the_lock_file_stays(tmp_path, stubs, capsys):
+    cfg = write_config(tmp_path)
+    runs = tmp_path / "runs"
+    assert main(cfg, "--seed", 0, "--provider", "fake", "--runs-dir", runs) == 0
+    rid = capsys.readouterr().out.strip()
+    assert (runs / f"{rid}.lock").is_file() and lock_is_free(runs, rid)
+
+
+def test_the_lock_is_released_when_the_process_ends(tmp_path):
+    """A process holding the lock is killed outright (no cleanup of its own); the lock is free afterwards."""
+    runs, rid = tmp_path / "runs", "refine-cn-2018-2023-s0-deadbeef"
+    holder = tmp_path / "holder.py"
+    holder.write_text("import sys, time\nfrom pathlib import Path\nfrom loop.run import acquire_lock\n"
+                      "if __name__ == '__main__':\n"
+                      "    f = acquire_lock(Path(sys.argv[1]), sys.argv[2])\n"
+                      "    print('held' if f else 'busy', flush=True)\n"
+                      "    time.sleep(120)\n")
+    p = subprocess.Popen([sys.executable, str(holder), str(runs), rid], cwd=ROOT, stdout=subprocess.PIPE, text=True,
+                         env={**os.environ, "MLFLOW_DISABLE_AGENT_HINT": "1", "PYTHONPATH": str(ROOT)})
+    try:
+        assert p.stdout.readline().strip() == "held"
+        assert not lock_is_free(runs, rid)
+        assert cli.acquire_lock(runs, rid) is None
+    finally:
+        p.kill(); p.wait(timeout=20)
+    assert lock_is_free(runs, rid)
+
+
 def test_seed_not_in_config_seeds_fails(tmp_path, stubs, capsys):
     cfg = write_config(tmp_path)
     assert main(cfg, "--seed", 7, "--provider", "fake", "--runs-dir", tmp_path / "runs") != 0
@@ -69,8 +144,9 @@ def test_seed_not_in_config_seeds_fails(tmp_path, stubs, capsys):
 def test_score_only_without_a_run_fails(tmp_path, stubs, capsys):
     cfg = write_config(tmp_path)
     assert main(cfg, "--seed", 0, "--provider", "fake", "--score-only", "--runs-dir", tmp_path / "runs") != 0
-    assert "no run directory" in capsys.readouterr().err and not (tmp_path / "runs").exists()
     rid = config.run_id(fake_cfg(cfg), 0)
+    assert "no run directory" in capsys.readouterr().err
+    assert [p.name for p in (tmp_path / "runs").iterdir()] == [f"{rid}.lock"]     # only the lock it took
     (tmp_path / "runs" / rid).mkdir(parents=True)
     assert main(cfg, "--seed", 0, "--provider", "fake", "--score-only", "--runs-dir", tmp_path / "runs") != 0
     assert "chosen.json" in capsys.readouterr().err and stubs == []
@@ -141,7 +217,7 @@ def test_unfinished_run_is_moved_aside_and_started_fresh(tmp_path, stubs, capsys
     (d / "ledger.jsonl").write_text('{"half": "a dead run"}\n')
     assert main(cfg, "--seed", 0, "--provider", "fake", "--runs-dir", tmp_path / "runs") == 0
     assert capsys.readouterr().out == rid + "\n"
-    (aborted,) = [p for p in (tmp_path / "runs").iterdir() if p.name != rid]
+    (aborted,) = [p for p in (tmp_path / "runs").iterdir() if p.name not in (rid, f"{rid}.lock")]
     assert aborted.name.startswith(f"{rid}.aborted-") and aborted.name.endswith("Z")
     assert (aborted / "ledger.jsonl").read_text() == '{"half": "a dead run"}\n' and not (aborted / "done").exists()
     assert "a dead run" not in (d / "ledger.jsonl").read_text() and (d / "done").exists()
@@ -160,7 +236,7 @@ def test_plain_run_on_a_finished_arm_scores_what_is_missing(tmp_path, stubs, cap
     assert capsys.readouterr().out == rid + "\n"
     assert stubs == [("score", rid)] and (d / "done").exists()
     assert (d / "ledger.jsonl").read_text() == '{"kept": "a finished arm"}\n'
-    assert sorted(p.name for p in (tmp_path / "runs").iterdir()) == [rid]
+    assert sorted(p.name for p in (tmp_path / "runs").iterdir()) == [rid, f"{rid}.lock"]
 
 
 def test_score_only_runs_the_scorer_and_writes_done(tmp_path, stubs, capsys):
