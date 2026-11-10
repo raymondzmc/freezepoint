@@ -65,7 +65,7 @@ class _Run:
 
     def refine(self, step: int, best: dict, recs: list[dict]) -> None:
         feedback = {k: _feedback(best)[k] for k in FEEDBACK_KEYS}
-        expr = self.gen.refine(best["artifact"], feedback, _history(recs), self.seed)
+        expr = self.gen.refine(best["artifact"], feedback, _history(recs), self.seed, context=self.context)
         self._candidate(expr, step, best["id"])
 
     def _candidate(self, expr: str, step: int, parent: str | None) -> None:

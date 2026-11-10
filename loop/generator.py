@@ -45,7 +45,7 @@ _EXPR_LINE = re.compile(r"^(?:\$|\(|(?:" + "|".join(sorted(ALLOWED_OPS)) + r")\b
 class Generator(Protocol):
     last_cost: dict
     def propose(self, context: str, n: int, seed: int) -> list[str]: ...
-    def refine(self, expr: str, feedback: dict, history: list[dict], seed: int) -> str: ...
+    def refine(self, expr: str, feedback: dict, history: list[dict], seed: int, *, context: str = "") -> str: ...
 
 def parse_expression(text: str) -> str:
     """The last non-empty fenced block, else the last line starting with `$`, `(` or an operator name, else the
@@ -77,9 +77,10 @@ def format_history(history: list[dict]) -> str:
     return "\n".join(f"{i}. {h['expr']}  ->  " + (f"invalid: {h['error']}" if h.get("error") else f"ic {_num(h.get('ic'))}")
                      for i, h in enumerate(shown, 1))
 
-def refine_values(expr: str, feedback: dict, history: list[dict]) -> dict:
+def refine_values(expr: str, feedback: dict, history: list[dict], context: str = "") -> dict:
+    """The refine prompt's slots; `context` is the same setting passage the propose prompt carries."""
     fb = "\n".join(f"{k}: {_num(feedback.get(k))}" for k in FEEDBACK_KEYS)
-    return {**_lists(), "expr": expr, "feedback": fb, "history": format_history(history)}
+    return {**_lists(), "expr": expr, "feedback": fb, "history": format_history(history), "context": context}
 
 class FakeGenerator:
     """Cycles through `exprs`. The cursor starts at `seed % len(exprs)` on the first call and advances by one for
@@ -92,7 +93,7 @@ class FakeGenerator:
         return out
     def propose(self, context: str, n: int, seed: int) -> list[str]:
         self.last_cost = {}; return [self._next(seed) for _ in range(n)]
-    def refine(self, expr: str, feedback: dict, history: list[dict], seed: int) -> str:
+    def refine(self, expr: str, feedback: dict, history: list[dict], seed: int, *, context: str = "") -> str:
         self.last_cost = {}; return self._next(seed)
 
 def read_api_key() -> str:
@@ -160,8 +161,8 @@ class ApiGenerator:
         return out
     def propose(self, context: str, n: int, seed: int) -> list[str]:
         return self._ask([render("propose", propose_values(context))] * n)
-    def refine(self, expr: str, feedback: dict, history: list[dict], seed: int) -> str:
-        return self._ask([render("refine", refine_values(expr, feedback, history))])[0]
+    def refine(self, expr: str, feedback: dict, history: list[dict], seed: int, *, context: str = "") -> str:
+        return self._ask([render("refine", refine_values(expr, feedback, history, context))])[0]
 
 class LocalGenerator:
     """A local causal LM from `data/models/<name>`, greedy decoding with the seed set before each generation."""
@@ -187,8 +188,8 @@ class LocalGenerator:
         return parse_expression(self._tok.decode(out[0, n_prompt:], skip_special_tokens=True))
     def propose(self, context: str, n: int, seed: int) -> list[str]:
         return [self._generate(render("propose", propose_values(context)), seed) for _ in range(n)]
-    def refine(self, expr: str, feedback: dict, history: list[dict], seed: int) -> str:
-        return self._generate(render("refine", refine_values(expr, feedback, history)), seed)
+    def refine(self, expr: str, feedback: dict, history: list[dict], seed: int, *, context: str = "") -> str:
+        return self._generate(render("refine", refine_values(expr, feedback, history, context)), seed)
 
 def make_generator(gen_cfg) -> Generator:
     """The generator a config's `generator` section names. No key is read here: the API generator reads it at its

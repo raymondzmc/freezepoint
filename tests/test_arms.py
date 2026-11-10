@@ -63,10 +63,10 @@ class SpyGenerator:
     def propose(self, context, n, seed):
         self._start({"kind": "propose", "context": context, "n": n, "seed": seed})
         return self.inner.propose(context, n, seed)
-    def refine(self, expr, feedback, history, seed):
+    def refine(self, expr, feedback, history, seed, *, context=""):
         self._start({"kind": "refine", "expr": expr, "feedback": copy.deepcopy(feedback),
-                     "history": copy.deepcopy(history), "seed": seed})
-        return self.inner.refine(expr, feedback, history, seed)
+                     "history": copy.deepcopy(history), "seed": seed, "context": context})
+        return self.inner.refine(expr, feedback, history, seed, context=context)
 
 
 def run(arm, exprs, tmp_path, k=3, seed=0, ev=None, gen=None, **kw):
@@ -149,6 +149,11 @@ def test_model_falls_back_to_config_when_cost_has_none(tmp_path):
 def test_context_is_handed_to_propose(tmp_path):
     r = run("bestofn", ["$close"], tmp_path, context="csi300 up to 2021-12-31")
     assert {c["context"] for c in r.gen.calls} == {"csi300 up to 2021-12-31"}
+
+def test_context_is_handed_to_every_refinement(tmp_path):
+    r = run("refine", ["$close", BAD, "Mean($close, 5)", "$open"], tmp_path, context="csi300 up to 2021-12-31")
+    kinds = [c["kind"] for c in r.gen.calls]
+    assert kinds.count("refine") == 3 and {c["context"] for c in r.gen.calls} == {"csi300 up to 2021-12-31"}
 
 def test_bestofn_repeated_expressions_get_distinct_ids_steps_and_seeds(tmp_path):
     r = run("bestofn", ["$close"], tmp_path, k=4, seed=7)

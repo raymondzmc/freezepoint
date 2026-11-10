@@ -1,5 +1,7 @@
 You are helping search for a predictive stock factor. A factor is a formula over daily price and volume data that gives every stock in the universe a number each day. We score it by the rank correlation (Spearman) between the factor and the stock's return from the next close to the close after it, computed across the universe's stocks on each day and then averaged over the days. A higher average is better.
 
+Setting: {context}
+
 Factors are written in Qlib's expression language. The only operators that exist are:
 
 {operators}

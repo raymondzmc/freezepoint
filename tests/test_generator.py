@@ -18,7 +18,8 @@ from loop.generator import (
 )
 
 PROPOSE = {"operators": "Mean", "fields": "$close", "context": "csi300, 2018-01-01 to 2021-12-31"}
-REFINE = {"operators": "Mean", "fields": "$close", "expr": "$close", "feedback": "ic 0.01", "history": "none"}
+REFINE = {"operators": "Mean", "fields": "$close", "expr": "$close", "feedback": "ic 0.01", "history": "none",
+          "context": "csi300, 2018-01-01 to 2021-12-31"}
 
 # parse_expression
 def test_parse_expression_takes_last_fenced_block():
@@ -41,6 +42,19 @@ def test_prompt_templates_render_without_missing_keys():
     p, r = render("propose", PROPOSE), render("refine", REFINE)
     assert "csi300" in p and "ic 0.01" in r
     for op in ALLOWED_OPS: assert op in render("propose", {**PROPOSE, "operators": ", ".join(sorted(ALLOWED_OPS))})
+def test_refine_prompt_carries_the_same_setting_passage_as_propose():
+    p, r = render("propose", PROPOSE), render("refine", REFINE)
+    line = "Setting: csi300, 2018-01-01 to 2021-12-31"
+    assert line in p and line in r
+    with pytest.raises(KeyError): render("refine", {k: v for k, v in REFINE.items() if k != "context"})
+def test_api_refine_sends_the_context():
+    g, stub = api(["```\nRank($close)\n```"])
+    g.refine("$close", {"ic": 0.02}, [], 0, context="csi300 had 300 members on 2021-12-31")
+    text = stub.calls[0]["messages"][0]["content"]
+    assert "Setting: csi300 had 300 members on 2021-12-31" in text
+    assert text == render("refine", generator.refine_values("$close", {"ic": 0.02}, [], "csi300 had 300 members on 2021-12-31"))
+def test_fake_generator_accepts_a_context_on_refine():
+    assert FakeGenerator(["a", "b"]).refine("a", {}, [], 0, context="ctx") == "a"
 def test_render_raises_on_missing_key():
     with pytest.raises(KeyError): render("propose", {"operators": "Mean", "fields": "$close"})
     with pytest.raises(KeyError): render("refine", {k: v for k, v in REFINE.items() if k != "history"})
@@ -195,7 +209,8 @@ def test_local_generator_passes_the_encoding_decodes_new_tokens_only_and_is_gree
     assert gkw["do_sample"] is False and gkw["max_new_tokens"] == 64
     assert log["decoded"][0] == [7, 8]                                  # only the newly generated tokens
     assert g.last_cost["input_tokens"] == 3 and g.last_cost["output_tokens"] == 2 and g.last_cost["sampling"] == "greedy"
-    assert g.refine("$close", {"ic": 0.1}, [], 9) == "Rank($close)" and log["seeds"][-1] == 9
+    assert g.refine("$close", {"ic": 0.1}, [], 9, context="ctx") == "Rank($close)" and log["seeds"][-1] == 9
+    assert "Setting: ctx" in log["templates"][-1][0][0]["content"]
 
 # make_generator and the default fake expressions
 def gen_cfg(provider, **kw):
