@@ -4,8 +4,9 @@
 
 Guarantees. (1) The run id is computed from the config after the overrides, and that effective config is what the
 run directory records. (2) A run's ledger is never appended to by a second attempt: a finished run (`done` present)
-is left alone, an unfinished one is renamed `<run_id>.aborted-<UTC timestamp>` (never deleted) and the run starts
-fresh; only `--score-only` reopens a run, and only to let the scorer fill in what is missing. (3) `done` is written
+is left alone, with or without `--score-only`; an unfinished one is renamed `<run_id>.aborted-<UTC timestamp>` (never
+deleted) and the run starts fresh, unless `--score-only` is given and its arm finished (`chosen.json`), in which case
+the scorer fills in what is missing. (3) `done` is written
 last and is the only sign that a run is complete; nothing is written to the directory after it. (4) The proposal
 context comes from one point-in-time `universe` call as of the feedback window's end, logged in `calls.jsonl`; the
 trials record that call's line range (0-based, end exclusive) as `tool_log_span`. (5) Standard output carries only
@@ -86,7 +87,6 @@ def _run(cfg: config.RunConfig, seed: int, rid: str, runs: Path) -> None:
 
 
 def _score_only(cfg: config.RunConfig, rid: str, d: Path) -> None:
-    (d / "done").unlink(missing_ok=True)    # nothing may follow `done`, so it comes back only once scoring is over
     _say(f"{rid}: scoring what is missing")
     _say(f"{rid}: wrote {score_run(cfg, rid, Ledger(d / 'ledger.jsonl'))} scores")
     _write_done(d)
@@ -115,7 +115,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     rid = config.run_id(cfg, args.seed)
     d = args.runs_dir / rid
-    if args.score_only:
+    if (d / "done").exists():
+        _say(f"{rid}: already complete, nothing to do")
+    elif args.score_only:
         if not d.is_dir():
             _say(f"error: --score-only: no run directory {d}; run without --score-only first")
             return 2
@@ -124,8 +126,6 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         with contextlib.redirect_stdout(sys.stderr):
             _score_only(cfg, rid, d)
-    elif (d / "done").exists():
-        _say(f"{rid}: already complete, nothing to do")
     else:
         with contextlib.redirect_stdout(sys.stderr):
             _run(cfg, args.seed, rid, args.runs_dir)

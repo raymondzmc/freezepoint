@@ -160,26 +160,59 @@ def test_score_only_runs_the_scorer_and_writes_done(tmp_path, stubs, capsys):
     assert sorted(p.name for p in d.iterdir()) == ["chosen.json", "done", "ledger.jsonl"]   # no config rewrite
 
 
-def test_score_only_on_a_done_run_rewrites_done_after_scoring(tmp_path, stubs, monkeypatch):
+def test_score_only_leaves_a_done_run_alone(tmp_path, stubs, capsys):
     cfg = write_config(tmp_path)
     rid = config.run_id(fake_cfg(cfg), 0)
     d = tmp_path / "runs" / rid
     d.mkdir(parents=True)
-    for name in ("chosen.json", "ledger.jsonl", "done"): (d / name).write_text("")
-    seen = []
-    monkeypatch.setattr(cli, "score_run", lambda cfg, rid, ledger: seen.append((d / "done").exists()) or 0)
+    for name in FILES: (d / name).write_text(f"{name}\n")
+    before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in d.iterdir()}
     assert main(cfg, "--seed", 0, "--provider", "fake", "--score-only", "--runs-dir", tmp_path / "runs") == 0
-    assert seen == [False] and (d / "done").exists()                    # nothing is written while `done` stands
+    assert capsys.readouterr().out == rid + "\n" and stubs == []          # the scorer never ran
+    assert {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in d.iterdir()} == before
 
 
-def test_exception_leaves_no_done(tmp_path, stubs, monkeypatch, capsys):
+@pytest.mark.parametrize("error", [RuntimeError("API outage"), FileNotFoundError("no Qlib data for region 'us'")])
+def test_exception_leaves_no_done(tmp_path, stubs, monkeypatch, capsys, error):
     cfg = write_config(tmp_path)
-    def boom(*a, **kw): raise RuntimeError("API outage")
+    def boom(*a, **kw): raise error
     monkeypatch.setattr(cli, "score_run", boom)
-    with pytest.raises(RuntimeError, match="outage"):
+    with pytest.raises(type(error)):
         main(cfg, "--seed", 0, "--provider", "fake", "--runs-dir", tmp_path / "runs")
     d = tmp_path / "runs" / config.run_id(fake_cfg(cfg), 0)
     assert d.is_dir() and not (d / "done").exists() and capsys.readouterr().out == ""
+
+
+def test_missing_data_in_score_only_leaves_no_done(tmp_path, stubs, monkeypatch, capsys):
+    cfg = write_config(tmp_path)
+    d = tmp_path / "runs" / config.run_id(fake_cfg(cfg), 0)
+    d.mkdir(parents=True)
+    (d / "chosen.json").write_text("{}\n"); (d / "ledger.jsonl").write_text("")
+    def boom(*a, **kw): raise FileNotFoundError("no Qlib data for region 'us'")
+    monkeypatch.setattr(cli, "score_run", boom)
+    with pytest.raises(FileNotFoundError):
+        main(cfg, "--seed", 0, "--provider", "fake", "--score-only", "--runs-dir", tmp_path / "runs")
+    assert not (d / "done").exists() and capsys.readouterr().out == ""
+
+
+def test_missing_data_exits_non_zero_from_the_command_line(tmp_path):
+    """The real CLI and the real scorer with the data root pointed at an empty directory (by a small runner script that
+    patches `tools.QLIB_DATA`, then calls `main`): non-zero exit, no `done`, nothing on stdout, no score written."""
+    cfg = write_config(tmp_path)
+    d = tmp_path / "runs" / config.run_id(fake_cfg(cfg), 0)
+    d.mkdir(parents=True)
+    (d / "chosen.json").write_text("{}\n")
+    ledger = Ledger(d / "ledger.jsonl")
+    ledger.append(Trial(arm="refine", run=d.name, step=0, artifact="$close"))
+    shim = tmp_path / "shim.py"
+    shim.write_text("import pathlib, sys\nfrom harness.pit import tools\n"
+                    f"tools.QLIB_DATA = pathlib.Path({str(tmp_path / 'empty')!r})\n"
+                    "from loop.run import main\nsys.exit(main())\n")
+    p = subprocess.run([sys.executable, str(shim), str(cfg), "--seed", "0", "--provider", "fake", "--score-only",
+                        "--runs-dir", str(tmp_path / "runs")], cwd=ROOT, capture_output=True, text=True, timeout=120,
+                       check=False, env={**os.environ, "MLFLOW_DISABLE_AGENT_HINT": "1", "PYTHONPATH": str(ROOT)})
+    assert p.returncode != 0 and "FileNotFoundError" in p.stderr and p.stdout == ""
+    assert not (d / "done").exists() and ledger.records()[-1].get("artifact") == "$close"
 
 
 @pytest.mark.data

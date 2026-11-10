@@ -4,15 +4,17 @@ Guarantees. (1) `evaluate` is the only place a candidate is executed for scoring
 unvalidated reaches `D.features` through it (the label is appended here and reads the future by design). (2) The
 arithmetic is a pure function of an (instrument, datetime) frame, `score_frame`, so it is testable without data.
 (3) Scores are deterministic and memoised in-process. (4) A failed score has NaN metrics and no series, so a failure
-can never be mistaken for a weak result; `score_dict` writes strict JSON (non-finite floats become null). (5) Qlib
-failing on a validated expression is that candidate's failed score, never an exception that ends a run; Qlib failing
-to start is not, and propagates."""
+can never be mistaken for a weak result; `score_dict` writes strict JSON (non-finite floats become null). (5) Exactly
+one kind of exception becomes a failed score: one raised while Qlib loads a validated expression (`_load`; the
+reason names it). Missing region data (`qlib_init`'s check that the calendar is present, run before
+validation and outside any `try`) and an unknown region raise out of `evaluate`, so a data fault can never be recorded
+as the candidate's; so does an error in our own arithmetic (`score_frame`). Data that is present but damaged beyond
+its calendar is not detected as such and shows up as failed scores."""
 from __future__ import annotations
 
 import dataclasses
 import itertools
 import math
-import pathlib
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -22,7 +24,6 @@ from harness.factors import LABEL, validate
 from harness.pit.tools import qlib_init
 from harness.splits import Window
 
-QLIB_DATA = pathlib.Path.home() / ".qlib" / "qlib_data"
 MIN_NAMES = 30   # valid names a day needs to be kept
 MIN_DAYS = 60    # kept days a score needs to be ok
 _MEMO: dict = {}
@@ -86,13 +87,12 @@ def score_frame(df: pd.DataFrame, quantile: float = 0.2) -> FactorScore:
                        float(np.mean(turn)), len(ics), ls, kept)
 
 def _load(expr: str, window: Window, universe: str, region: str) -> pd.DataFrame:
-    """One `D.features` call: the expression and the label over the universe's membership through time."""
+    """One `D.features` call: the expression and the label over the universe's membership through time. Qlib must
+    already be initialised for `region` (`evaluate` does it first)."""
     from qlib.data import D
-    qlib_init(region)
     return D.features(D.instruments(universe), [expr, LABEL], start_time=window.start, end_time=window.end, disk_cache=0)
 
 def _score(expr: str, window: Window, universe: str, region: str, quantile: float) -> FactorScore:
-    qlib_init(region)   # outside the try: a data directory Qlib cannot start on is not a property of the candidate
     try:
         df = _load(expr, window, universe, region)
     except Exception as e:  # noqa: BLE001 - whatever Qlib raises on a validated expression is that candidate's failure
@@ -102,10 +102,11 @@ def _score(expr: str, window: Window, universe: str, region: str, quantile: floa
 def evaluate(expr: str, window: Window, universe: str, region: str, quantile: float = 0.2) -> FactorScore:
     """Score `expr` on `window` over `universe`. Validates first; a rejected expression returns a failed score with
     the validator's reason and is never executed. An exception Qlib raises while computing a validated expression
-    is a failed score that names it; an exception from initialising Qlib propagates and nothing is memoised.
-    Memoised on every argument, failures included."""
+    is a failed score that names it. Missing data for `region` raises FileNotFoundError before anything else, and
+    nothing is memoised. Memoised on every argument, failures included."""
     key = (expr, window, universe, region, quantile)
     if key not in _MEMO:
+        qlib_init(region)       # first and outside any try: a data fault must end the run, not fail the candidate
         ok, why = validate(expr, region)
         _MEMO[key] = _score(expr, window, universe, region, quantile) if ok else _failed(why)
     return _MEMO[key]

@@ -6,11 +6,10 @@ allow-list: Qlib builds expressions with `eval`, so the allow-list runs first an
 namespace of Qlib's own operators, with no data loaded. `validate` never raises."""
 from __future__ import annotations
 
-import pathlib
 import re
 from types import SimpleNamespace
 
-from harness.pit.tools import qlib_init
+from harness.pit.tools import REGIONS, data_present, qlib_init
 
 ALLOWED_OPS = frozenset([
     "Ref", "Mean", "Std", "Max", "Min", "Sum", "Rank", "Corr", "Cov", "Delta", "Slope", "Rsquare", "Resi", "Quantile", "Abs",
@@ -19,8 +18,6 @@ ALLOWED_FIELDS = frozenset(["$open", "$high", "$low", "$close", "$volume", "$fac
 FORBIDDEN = re.compile(r"Ref\s*\([^)]*,\s*-\s*\d")
 LABEL = "Ref($close, -2) / Ref($close, -1) - 1"
 MAX_LEN = 1000
-QLIB_DATA = pathlib.Path.home() / ".qlib" / "qlib_data"
-_DIRS = {"cn": "cn_data", "us": "us_data"}
 _DRY_RUN = {"cn": ("SH600000", "2020-01-02", "2020-02-14"), "us": ("AAPL", "2020-01-02", "2020-02-14")}
 
 _TOKEN = re.compile(r"""
@@ -83,9 +80,10 @@ def _dry_run(expr: str, region: str) -> str | None:
 
 def validate(expr: str, region: str = "cn") -> tuple[bool, str]:
     """(True, "") if `expr` may be scored, else (False, reason). Stages: allow-list, look-ahead regex, parse and tree
-    walk, then a dry load when the region's data directory exists. Never raises."""
+    walk, then a dry load when the region's data is present (`data_present`); with no data the dry run is skipped,
+    so a data fault is never reported as the candidate's. Never raises."""
     try:
-        if region not in _DIRS: return False, f"unknown region {region!r}"
+        if region not in REGIONS: return False, f"unknown region {region!r}"
         if why := _allow_list(expr): return False, why
         if FORBIDDEN.search(expr): return False, "Ref with a negative offset reads the future"
         try:
@@ -95,7 +93,7 @@ def validate(expr: str, region: str = "cn") -> tuple[bool, str]:
         from qlib.data.base import Expression
         if not isinstance(tree, Expression): return False, "not an expression over fields"
         if why := _look_ahead(tree): return False, why
-        if (QLIB_DATA / _DIRS[region]).exists() and (why := _dry_run(expr, region)): return False, why
+        if data_present(region) and (why := _dry_run(expr, region)): return False, why
         return True, ""
     except BaseException as e:   # the contract is "never raises"
         if isinstance(e, (KeyboardInterrupt, SystemExit)): raise

@@ -5,8 +5,10 @@ from dataclasses import replace
 
 import pytest
 
+from harness import backtest
 from harness.backtest import FactorScore
 from harness.ledger.ledger import Ledger, LoopView, Trial
+from harness.pit import tools
 from harness.splits import get as get_split
 from loop import config
 from loop.score import score_run
@@ -137,3 +139,14 @@ def test_home_universe_region(tmp_path, universe):
     ev = fake_evaluate()
     score_run(replace(CFG, universe=universe, transfer_to=()), RUN, ledger, evaluate=ev)
     assert ev.calls == [("$close", SPLIT.heldout, universe, config.region_of(universe))]
+
+
+def test_missing_data_propagates_out_of_score_run(tmp_path, monkeypatch):
+    """The real evaluate against an empty data root: the scorer stops, and no score is written for anyone."""
+    monkeypatch.setattr(tools, "QLIB_DATA", tmp_path / "empty")
+    monkeypatch.setattr(backtest, "_MEMO", {})
+    ledger, _ = make_ledger(tmp_path)
+    before = ledger.path.read_bytes()
+    with pytest.raises(FileNotFoundError, match="cn_data"):
+        score_run(CFG, RUN, ledger)
+    assert ledger.path.read_bytes() == before

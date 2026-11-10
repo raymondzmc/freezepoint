@@ -15,19 +15,34 @@ from harness.pit.news import DEFAULT_ROOT, NewsIndex
 from harness.pit.registry import Registry
 
 FIELDS = ("$open", "$high", "$low", "$close", "$volume", "$factor")
+QLIB_DATA = pathlib.Path.home() / ".qlib" / "qlib_data"   # the one place the Qlib data paths are defined
 _PROVIDERS = {"cn": "cn_data", "us": "us_data"}
+REGIONS = tuple(_PROVIDERS)
 _region: str | None = None
 # One process: Qlib's default 8 workers respawn on every D.features call, ~6.5 s on macOS; with 1, CSI 300 x 4 years takes 1.0-1.4 s.
 _KERNELS = 1
 
-def qlib_init(region: str) -> None:
-    """Initialise Qlib for `region` ('cn' or 'us'); a no-op if it is already the current region, a re-init otherwise."""
-    global _region
+def data_dir(region: str) -> pathlib.Path:
+    """The Qlib provider directory of `region`."""
     if region not in _PROVIDERS: raise ValueError(f"unknown region {region!r}; expected one of {sorted(_PROVIDERS)}")
+    return QLIB_DATA / _PROVIDERS[region]
+
+def data_present(region: str) -> bool:
+    """True when `region`'s provider directory has a daily calendar (`calendars/day.txt`), the file Qlib needs first."""
+    return (data_dir(region) / "calendars" / "day.txt").is_file()
+
+def qlib_init(region: str) -> None:
+    """Initialise Qlib for `region` ('cn' or 'us'); a no-op if it is already the current region, a re-init otherwise.
+    Raises FileNotFoundError, on every call, when the region's data is not present: `qlib.init` itself accepts a
+    missing directory and the fault would only surface later, at load time, looking like a property of the query."""
+    global _region
+    d = data_dir(region)
+    if not data_present(region):
+        raise FileNotFoundError(f"no Qlib data for region {region!r}: {d / 'calendars' / 'day.txt'} does not exist")
     if _region == region: return
     import qlib
     from qlib.constant import REG_CN, REG_US
-    qlib.init(provider_uri=str(pathlib.Path.home() / ".qlib" / "qlib_data" / _PROVIDERS[region]), region={"cn": REG_CN, "us": REG_US}[region], kernels=_KERNELS)
+    qlib.init(provider_uri=str(d), region={"cn": REG_CN, "us": REG_US}[region], kernels=_KERNELS)
     _region = region
 
 def _last_base(s: pd.Series) -> float:

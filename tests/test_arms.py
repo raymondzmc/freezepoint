@@ -9,9 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from harness import factors
+from harness import backtest
 from harness.backtest import FactorScore
 from harness.ledger.ledger import Ledger, LoopView
+from harness.pit import tools
 from harness.splits import get as get_split
 from loop import config
 from loop.arms import run_arm
@@ -26,7 +27,7 @@ BAD = "Ref($close,-1)"     # rejected by the validator: reads the future
 @pytest.fixture(autouse=True)
 def no_data_dir(monkeypatch, tmp_path):
     """Point the validator's dry run at an empty directory so these tests never touch Qlib data."""
-    monkeypatch.setattr(factors, "QLIB_DATA", tmp_path / "no-qlib-data")
+    monkeypatch.setattr(tools, "QLIB_DATA", tmp_path / "no-qlib-data")
 
 
 def cfg_for(arm, k=3, **kw):
@@ -288,3 +289,14 @@ def test_metric_other_than_ic_raises(tmp_path):
 def test_fake_evaluate_reverses_pilot():
     ev = fake_evaluate()
     assert math.isclose(ev("$close", SPLIT.pilot, "csi300", "cn").ic, -ev("$close", SPLIT.feedback, "csi300", "cn").ic)
+
+
+def test_missing_data_propagates_out_of_run_arm(tmp_path, monkeypatch):
+    """The real evaluate with no data: the candidate is logged (it validated), then the run stops without a choice."""
+    monkeypatch.setattr(backtest, "_MEMO", {})
+    cfg = cfg_for("frozen")
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    with pytest.raises(FileNotFoundError, match="cn_data"):
+        run_arm(cfg, 0, FakeGenerator(["$close"]), ledger, root=tmp_path / "runs")
+    assert ledger.count() == 1 and not (tmp_path / "runs" / config.run_id(cfg, 0) / "chosen.json").exists()
+    assert all("score" not in r for r in ledger.records())

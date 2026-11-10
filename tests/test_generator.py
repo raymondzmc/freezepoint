@@ -182,7 +182,8 @@ def test_make_generator_unknown_provider():
     with pytest.raises(ValueError, match="provider"): make_generator(gen_cfg("openai"))
 def test_default_fake_exprs_all_valid_but_one_that_reads_the_future(monkeypatch, tmp_path):
     from harness import factors
-    monkeypatch.setattr(factors, "QLIB_DATA", tmp_path / "no-qlib-data")      # no dry run: data-free
+    from harness.pit import tools
+    monkeypatch.setattr(tools, "QLIB_DATA", tmp_path / "no-qlib-data")        # no dry run: data-free
     verdicts = {e: factors.validate(e, "cn") for e in DEFAULT_FAKE_EXPRS}
     bad = [e for e, (ok, _) in verdicts.items() if not ok]
     assert len(DEFAULT_FAKE_EXPRS) >= 6 and len(set(DEFAULT_FAKE_EXPRS)) == len(DEFAULT_FAKE_EXPRS)

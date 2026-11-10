@@ -7,16 +7,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from harness import backtest
+from harness import backtest, factors
 from harness.backtest import FactorScore, evaluate, score_dict, score_frame
+from harness.pit import tools
 from harness.pit.tools import qlib_init
 from harness.splits import Window
 
-QLIB = backtest.QLIB_DATA
 
 @pytest.fixture
 def cn():
-    if not (QLIB / "cn_data").exists(): pytest.skip("no CN data")
+    if not tools.data_present("cn"): pytest.skip("no CN data")
     qlib_init("cn")
 
 def make_frame(n_days=70, n_names=40, factor=None, label=None, seed=0):
@@ -112,12 +112,11 @@ def test_failed_score_dict_is_strict_json():
     assert "daily_ls" not in d and "dates" not in d and d["ic"] is None and d["ok"] is False
     assert json.loads(json.dumps(d, allow_nan=False)) == d
 
-# a Qlib failure while computing a validated expression is a failed score; a failure to initialise Qlib is not
+# a Qlib failure while computing a validated expression is a failed score; missing data is not
 @pytest.fixture
 def no_qlib(monkeypatch, tmp_path):
-    """No data, no Qlib init: the validator skips its dry run; `qlib_init` is a no-op unless a test says otherwise."""
-    from harness import factors
-    monkeypatch.setattr(factors, "QLIB_DATA", tmp_path / "no-qlib-data")
+    """No data, no Qlib init: the validator skips its dry run and `qlib_init` is stubbed to a no-op."""
+    monkeypatch.setattr(tools, "QLIB_DATA", tmp_path / "no-qlib-data")
     monkeypatch.setattr(backtest, "qlib_init", lambda region: None)
     monkeypatch.setattr(backtest, "_MEMO", {})
 
@@ -132,13 +131,35 @@ def test_qlib_error_while_computing_becomes_a_failed_score(no_qlib, monkeypatch)
     assert math.isnan(fs.ic) and fs.daily_ls == [] and fs.dates == []
     assert evaluate("Mean($close, 5) / $close", w, "csi300", "cn") == fs and len(calls) == 1   # memoised, like any
 
-def test_qlib_init_error_propagates(no_qlib, monkeypatch):
-    def bad_init(region): raise FileNotFoundError("no provider_uri at ~/.qlib/qlib_data/cn_data")
-    monkeypatch.setattr(backtest, "qlib_init", bad_init)
-    monkeypatch.setattr(backtest, "_load", lambda *a: pytest.fail("_load must not run when Qlib cannot start"))
-    with pytest.raises(FileNotFoundError, match="provider_uri"):
-        evaluate("Mean($close, 5) / $close", Window("2019-01-01", "2019-03-31"), "csi300", "cn")
+@pytest.fixture
+def empty_data(monkeypatch, tmp_path):
+    """The real presence check against a data root whose region directories exist but hold nothing."""
+    root = tmp_path / "qlib_data"
+    for sub in ("cn_data", "us_data"): (root / sub).mkdir(parents=True)
+    monkeypatch.setattr(tools, "QLIB_DATA", root)
+    monkeypatch.setattr(backtest, "_MEMO", {})
+    return root
+
+def test_data_present_needs_the_daily_calendar(empty_data):
+    assert not tools.data_present("cn") and not tools.data_present("us")
+    (empty_data / "us_data" / "calendars").mkdir(); (empty_data / "us_data" / "calendars" / "day.txt").write_text("")
+    assert tools.data_present("us") and not tools.data_present("cn")
+    with pytest.raises(ValueError, match="unknown region"): tools.data_present("eu")
+
+@pytest.mark.parametrize("region", ["cn", "us"])
+def test_qlib_init_raises_when_the_regions_data_is_missing(empty_data, region):
+    with pytest.raises(FileNotFoundError, match=f"{region}_data/calendars/day.txt"): qlib_init(region)
+
+def test_evaluate_raises_on_missing_data_instead_of_failing_the_candidate(empty_data, monkeypatch):
+    monkeypatch.setattr(backtest, "_load", lambda *a: pytest.fail("nothing may load without data"))
+    with pytest.raises(FileNotFoundError, match="us_data"):
+        evaluate("Mean($close, 5) / $close", Window("2022-07-15", "2023-12-31"), "sp500", "us")
     assert backtest._MEMO == {}                                         # nothing memoised: a retry tries again
+
+def test_validate_skips_the_dry_run_when_data_is_missing(empty_data, monkeypatch):
+    monkeypatch.setattr(factors, "qlib_init", lambda region: pytest.fail("the dry run must be skipped"))
+    assert factors.validate("Mean($close, 5) / $close - 1", "cn") == (True, "")
+    assert factors.validate("Mean($close, 5) / $close - 1", "us") == (True, "")
 
 def test_score_record_is_score_dict_plus_series():
     fs = FactorScore(True, "", 0.1, 0.2, 0.01, 0.3, 0.5, 2, [0.1, -0.1], ["2020-01-01", "2020-01-02"])

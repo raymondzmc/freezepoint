@@ -1,17 +1,16 @@
 """Tests for expression validation. Stages 1 to 3 run with no data on disk; the dry run is the `data` test."""
-import pathlib
-
 import pytest
 
 from harness import factors
 from harness.factors import ALLOWED_OPS, FORBIDDEN, LABEL, MAX_LEN, validate
+from harness.pit import tools
 
-REAL_DATA = pathlib.Path.home() / ".qlib" / "qlib_data"
+CN_DATA = tools.data_present("cn")
 
 @pytest.fixture(autouse=True)
 def no_data_dir(request, monkeypatch, tmp_path):
     """Point the dry run at an empty directory so these tests never touch Qlib data, except the `data` test."""
-    if request.node.get_closest_marker("data") is None: monkeypatch.setattr(factors, "QLIB_DATA", tmp_path)
+    if request.node.get_closest_marker("data") is None: monkeypatch.setattr(tools, "QLIB_DATA", tmp_path)
 
 def test_negative_ref_is_rejected():
     ok, why = validate("Ref($close, -1) / $close"); assert not ok and "future" in why
@@ -86,13 +85,13 @@ def test_validate_never_raises_on_hostile_input():
     assert validate("Mean($close, 5)")[0] and not validate("5")[0]
 
 def test_absent_data_dir_skips_the_dry_run(monkeypatch, tmp_path):
-    monkeypatch.setattr(factors, "QLIB_DATA", tmp_path / "nowhere")
+    monkeypatch.setattr(tools, "QLIB_DATA", tmp_path / "nowhere")
     monkeypatch.setattr(factors, "qlib_init", lambda region: pytest.fail("the dry run must be skipped"))
     assert validate("Mean($close, 5) / $close - 1") == (True, "")
     assert validate("Ref($close, -1)")[0] is False and validate("Magic($close)")[0] is False
 
 @pytest.mark.data
-@pytest.mark.skipif(not (REAL_DATA / "cn_data").exists(), reason="no Qlib cn_data")
+@pytest.mark.skipif(not CN_DATA, reason="no Qlib cn_data")
 def test_dry_run_catches_an_expression_that_parses_but_fails_at_load():
     ok, why = validate("Mean(1, 5)")        # a constant has no .load(); parsing cannot see that
     assert not ok and why
