@@ -160,3 +160,55 @@ def test_verify_skips_ots_without_receipt(tmp_path, runs, monkeypatch):
     mod.main()
     mod.verify(out)
     assert calls == []
+
+
+def _snapshot(d): return {p.name: p.read_bytes() for p in d.iterdir()}
+
+
+def test_from_runs_refuses_existing_commitment(tmp_path, runs):
+    root, _ = runs
+    out = tmp_path / "out"
+    assert cli("from-runs", root / "*", out).returncode == 0
+    (out / "commitment.sha256.ots").write_bytes(b"receipt")
+    before = _snapshot(out)
+    r = cli("from-runs", root / "*", out)
+    assert r.returncode != 0 and "commitment.json" in r.stderr
+    assert _snapshot(out) == before
+
+
+def test_from_runs_refuses_stray_receipt(tmp_path, runs):
+    root, _ = runs
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "commitment.sha256.ots").write_bytes(b"receipt")
+    r = cli("from-runs", root / "*", out)
+    assert r.returncode != 0 and "commitment.sha256.ots" in r.stderr
+    assert _snapshot(out) == {"commitment.sha256.ots": b"receipt"}
+
+
+def test_make_refuses_existing_commitment(tmp_path):
+    arts, conf, out = tmp_path / "a.json", tmp_path / "c.yaml", tmp_path / "out"
+    arts.write_text("[]"); conf.write_text("a: 1\n")
+    assert cli("make", arts, conf, out).returncode == 0
+    before = _snapshot(out)
+    r = cli("make", arts, conf, out)
+    assert r.returncode != 0 and "commitment.json" in r.stderr
+    assert _snapshot(out) == before
+
+
+@pytest.mark.parametrize(("rc", "expected"), [(0, 0), (1, 1)])
+def test_verify_follows_ots_result(tmp_path, runs, monkeypatch, rc, expected):
+    root, _ = runs
+    mod = _load_module()
+    out = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["commit.py", "from-runs", str(root / "*"), str(out)])
+    mod.main()
+    (out / "commitment.sha256.ots").write_bytes(b"receipt")
+    calls = []
+    monkeypatch.setattr(mod.shutil, "which", lambda name: "/fake/ots")
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: calls.append(a[0]) or subprocess.CompletedProcess(a[0], rc))
+    with pytest.raises(SystemExit) as e:
+        mod.verify(out)
+        sys.exit(0)
+    assert e.value.code == expected
+    assert calls == [["ots", "verify", str(out / "commitment.sha256.ots")]]

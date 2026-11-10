@@ -9,13 +9,19 @@ usage: commit.py make <artifacts.json> <config.yaml> <out dir>    writes commitm
        commit.py anchor <out dir>                                 runs `ots stamp` on the sha256 file
        commit.py verify <out dir>                                 recomputes the hash (exit 1 on a mismatch) and,
                                                                   if `ots` and the .ots receipt exist, runs `ots verify`
+A commitment is made once: make and from-runs refuse an out dir that already holds commitment.json,
+commitment.sha256 or commitment.sha256.ots; a new commitment goes in a new directory. verify also exits 1 when
+`ots verify` fails.
 `ots` is the OpenTimestamps client (pip install opentimestamps-client)."""
 import glob, hashlib, json, pathlib, shutil, subprocess, sys, datetime
 
 def canonical(obj): return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 def _write(body, out):
-    out = pathlib.Path(out); out.mkdir(parents=True, exist_ok=True)
+    out = pathlib.Path(out)
+    taken = [n for n in ("commitment.json", "commitment.sha256", "commitment.sha256.ots") if (out / n).exists()]
+    if taken: sys.exit(f"refusing to write into {out}: {', '.join(taken)} already exists; a commitment is made once, use a new directory")
+    out.mkdir(parents=True, exist_ok=True)
     (out / "commitment.json").write_bytes(canonical(body))
     sha = hashlib.sha256(canonical(body)).hexdigest()
     (out / "commitment.sha256").write_text(sha + "\n")
@@ -56,8 +62,10 @@ def verify(out):
     ok = sha == (out / "commitment.sha256").read_text().strip()
     print("hash matches:", ok)
     receipt = out / "commitment.sha256.ots"
-    if shutil.which("ots") and receipt.exists(): subprocess.run(["ots", "verify", str(receipt)], check=False)
-    if not ok: sys.exit(1)
+    stamped = True
+    if shutil.which("ots") and receipt.exists():
+        stamped = subprocess.run(["ots", "verify", str(receipt)], check=False).returncode == 0
+    if not (ok and stamped): sys.exit(1)
 
 def main():
     cmd = sys.argv[1:]
