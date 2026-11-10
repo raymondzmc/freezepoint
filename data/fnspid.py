@@ -37,17 +37,17 @@ def index():
     if not srcs: sys.exit("no news files under data/fnspid/Stock_news; run --news first")
     for src in srcs:
         print("indexing", src.name)
-        for chunk in pd.read_csv(src, usecols=lambda c: c.lower() in {"date", "article_title", "stock_symbol", "url", "publisher", "article"},
-                                 chunksize=200_000, low_memory=False):
+        for i, chunk in enumerate(pd.read_csv(src, usecols=lambda c: c.lower() in {"date", "article_title", "stock_symbol", "url", "publisher", "article"},
+                                              chunksize=200_000, low_memory=False)):
             chunk.columns = [c.lower() for c in chunk.columns]
             chunk["published"] = pd.to_datetime(chunk["date"], errors="coerce", utc=True)
-            chunk = chunk.dropna(subset=["published"])
-            for year, g in chunk.groupby(chunk["published"].dt.year):
-                p = out / f"{int(year)}.parquet"
-                g = g.drop(columns=["date"])
-                if p.exists(): g = pd.concat([pd.read_parquet(p), g])
-                g.sort_values("published").to_parquet(p, index=False)
-    print("index:", sorted(p.name for p in out.glob("*.parquet")))
+            chunk = chunk.dropna(subset=["published"]).drop(columns=["date"])
+            for year, g in chunk.groupby(chunk["published"].dt.year):       # one parquet part per chunk and year;
+                d = out / f"year={int(year)}"; d.mkdir(exist_ok=True)         # read with pd.read_parquet(out) as a dataset
+                g.sort_values("published").to_parquet(d / f"{src.stem}-{i:05d}.parquet", index=False)
+            if i % 10 == 0: print(f"  chunk {i}, {len(chunk)} rows, latest {chunk['published'].max().date()}", flush=True)
+    years = sorted(p.name for p in out.glob("year=*"))
+    print("index:", years[0], "..", years[-1], f"({len(years)} years)")
 
 if __name__ == "__main__":
     a = argparse.ArgumentParser(); a.add_argument("--prices", action="store_true"); a.add_argument("--news", action="store_true")

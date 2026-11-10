@@ -18,7 +18,7 @@ def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="fnspid_csv_"))
     n = 0
     for name in z.namelist():
-        if not name.lower().endswith(".csv"): continue
+        if not name.lower().endswith(".csv") or name.startswith("__MACOSX/") or pathlib.Path(name).name.startswith("._"): continue
         sym = pathlib.Path(name).stem.upper()
         df = pd.read_csv(io.BytesIO(z.read(name)))
         df.columns = [c.lower() for c in df.columns]
