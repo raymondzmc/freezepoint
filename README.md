@@ -26,6 +26,7 @@ bash data/qlib_cn.sh                      # CN daily prices -> ~/.qlib/qlib_data
 uv run python data/fnspid.py --prices     # FNSPID price history (562 MB)
 uv run python data/fnspid.py --news       # FNSPID news with text (5.5 GB); add --all for the 22 GB file
 uv run python data/us_prices.py           # FNSPID prices -> ~/.qlib/qlib_data/us_data
+uv run python data/sp500_pit.py           # point-in-time S&P 500 membership -> us_data/instruments/sp500.txt
 uv run python data/models.py pit-4b-ft-202412   # a time-locked generator, revision pinned in data/models.lock.json
 uv run python -m harness.smoke            # loads both Qlib regions and computes Alpha158 on a few names
 ```
