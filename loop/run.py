@@ -3,10 +3,11 @@
     python -m loop.run <config> --seed N [--score-only] [--provider P] [--model M] [--runs-dir DIR]
 
 Guarantees. (1) The run id is computed from the config after the overrides, and that effective config is what the
-run directory records. (2) A run's ledger is never appended to by a second attempt: a finished run (`done` present)
-is left alone, with or without `--score-only`; an unfinished one is renamed `<run_id>.aborted-<UTC timestamp>` (never
-deleted) and the run starts fresh, unless `--score-only` is given and its arm finished (`chosen.json`), in which case
-the scorer fills in what is missing. (3) `done` is written
+run directory records. (2) A run's ledger is never appended to by a second attempt, and a finished arm is never
+generated again. A directory with `done` is left alone. One with `chosen.json` but no `done` (the arm finished and only the
+scoring died) has its missing scores filled in and `done` written, with or without `--score-only`. One with neither is
+an arm that died part-way: it is renamed `<run_id>.aborted-<UTC timestamp>` (never deleted) and the run starts fresh,
+or, with `--score-only`, the command refuses. (3) `done` is written
 last and is the only sign that a run is complete; nothing is written to the directory after it. (4) The proposal
 context comes from one point-in-time `universe` call as of the feedback window's end, logged in `calls.jsonl`; the
 trials record that call's line range (0-based, end exclusive) as `tool_log_span`. (5) Standard output carries only
@@ -117,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     d = args.runs_dir / rid
     if (d / "done").exists():
         _say(f"{rid}: already complete, nothing to do")
-    elif args.score_only:
+    elif args.score_only or (d / "chosen.json").is_file():
         if not d.is_dir():
             _say(f"error: --score-only: no run directory {d}; run without --score-only first")
             return 2

@@ -148,6 +148,21 @@ def test_unfinished_run_is_moved_aside_and_started_fresh(tmp_path, stubs, capsys
     assert [s[0] for s in stubs] == ["context", "arm", "score"]
 
 
+def test_plain_run_on_a_finished_arm_scores_what_is_missing(tmp_path, stubs, capsys):
+    """The arm finished (`chosen.json`) and only scoring died: a plain invocation scores it, it does not generate again
+    and does not move the directory aside."""
+    cfg = write_config(tmp_path)
+    rid = config.run_id(fake_cfg(cfg), 0)
+    d = tmp_path / "runs" / rid
+    d.mkdir(parents=True)
+    (d / "chosen.json").write_text("{}\n"); (d / "ledger.jsonl").write_text('{"kept": "a finished arm"}\n')
+    assert main(cfg, "--seed", 0, "--provider", "fake", "--runs-dir", tmp_path / "runs") == 0
+    assert capsys.readouterr().out == rid + "\n"
+    assert stubs == [("score", rid)] and (d / "done").exists()
+    assert (d / "ledger.jsonl").read_text() == '{"kept": "a finished arm"}\n'
+    assert sorted(p.name for p in (tmp_path / "runs").iterdir()) == [rid]
+
+
 def test_score_only_runs_the_scorer_and_writes_done(tmp_path, stubs, capsys):
     cfg = write_config(tmp_path)
     rid = config.run_id(fake_cfg(cfg), 0)

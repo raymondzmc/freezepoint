@@ -34,10 +34,10 @@ def cfg_for(arm, max_steps=3, provider="api"):
                                    budget=replace(BASE.budget, max_steps=max_steps, n_candidates=max_steps + 1)))
 
 
-def trial(fb=UNSCORED, ho=0.0, valid=True, ls=None, dates=None):
+def trial(fb=UNSCORED, ho=0.0, valid=True, ls=None, dates=None, cost=None):
     """One candidate: feedback ic `fb` (None: a failed score), held-out ic `ho` (None: failed), its daily long-short
-    series `ls` on `dates` (defaults: a random series on all of DATES)."""
-    return {"fb": fb, "ho": ho, "valid": valid, "ls": ls, "dates": dates}
+    series `ls` on `dates` (defaults: a random series on all of DATES), and the generation's `cost` dict."""
+    return {"fb": fb, "ho": ho, "valid": valid, "ls": ls, "dates": dates, "cost": cost}
 
 
 def record(ic, ls=None, dates=None):
@@ -61,7 +61,7 @@ def make_run(root, arm, seed, trials, *, cfg=None, chosen="best", done=True, **c
     for step, t in enumerate(trials):
         expr = f"Mean($close, {step + 2})"
         tid = ledger.append(Trial(arm=arm, run=rid, step=step, artifact=expr, valid=t["valid"],
-                                  error="" if t["valid"] else "rejected on purpose"))
+                                  error="" if t["valid"] else "rejected on purpose", cost=t.get("cost") or {}))
         if t["fb"] is UNSCORED: continue
         ls = t["ls"] if t["ls"] is not None else rng.normal(0.001, 0.01, len(t["dates"] or DATES))
         ledger.score(tid, "feedback", record(t["fb"], ls, t["dates"]))
@@ -120,12 +120,12 @@ def test_ci_width_shrinks_with_more_seeds(tmp_path):
     assert np.all(width[5] < width[2])
 
 
-def test_report_writes_three_files(tmp_path):
+def test_report_writes_four_files(tmp_path):
     dirs = [make_run(tmp_path / "runs", arm, s, [trial(0.01 * (k + 1), 0.01) for k in range(1 if arm == "frozen" else 4)])
             for arm in ("frozen", "refine", "bestofn") for s in (0, 1)]
     out = tmp_path / "out"
     rep.report(dirs, out)
-    assert {p.name for p in out.iterdir()} == {"curve.csv", "selection.csv", "report.md"}
+    assert {p.name for p in out.iterdir()} == {"curve.csv", "selection.csv", "report.md", "cost.md"}
     c = pd.read_csv(out / "curve.csv")
     assert list(c.columns) == ["window", "arm", "step", "mean", "lo", "hi", "n"]
     assert list(dict.fromkeys(c.window)) == ["feedback", "pilot", "heldout", "transfer:csi500:heldout",
@@ -371,3 +371,39 @@ def test_command_line(tmp_path, capsys):
     (dirs[0] / "done").unlink()
     assert rep.main([*map(str, dirs), "--out", str(tmp_path / "bad")]) != 0
     assert dirs[0].name in capsys.readouterr().err
+
+
+# ---- the cost summary -----------------------------------------------------------------------------------------
+
+def cost_rows(path):
+    """`cost.md`'s table as {first cell: [other cells]}."""
+    lines = [ln for ln in path.read_text().splitlines() if ln.startswith("|")][2:]
+    return {cells[0]: cells[1:] for cells in ([c.strip() for c in ln.strip("|").split("|")] for ln in lines)}
+
+
+def test_cost_md_sums_the_cost_of_every_trial_per_arm(tmp_path):
+    c = lambda i, o, s: {"input_tokens": i, "output_tokens": o, "seconds": s}
+    dirs = [make_run(tmp_path / "runs", "frozen", s, [trial(0.01, 0.01, cost=c(100, 10, 1.5))]) for s in (0, 1)]
+    dirs += [make_run(tmp_path / "runs", "refine", s, [trial(0.01 * (k + 1), 0.01, cost=c(200, 20, 2.0))
+                                                      for k in range(4)]) for s in (0, 1, 2)]
+    dirs += [make_run(tmp_path / "runs", "bestofn", 0, [trial(0.01, 0.01, cost=c(50, 5, 0.25)) for _ in range(4)])]
+    rep.report(dirs, tmp_path / "out")
+    path = tmp_path / "out" / "cost.md"
+    t = cost_rows(path)
+    assert list(t) == ["frozen", "refine", "best-of-N", "total"]
+    assert t["frozen"] == ["2", "2", "200", "20", "3.0"]
+    assert t["refine"] == ["3", "12", "2400", "240", "24.0"]
+    assert t["best-of-N"] == ["1", "4", "200", "20", "1.0"]
+    assert t["total"] == ["6", "18", "2800", "280", "28.0"]
+    text = path.read_text()
+    assert "Scoring time is not in them" in text and "generations" in text
+
+
+def test_cost_md_for_a_fake_cell_is_zeros(tmp_path):
+    dirs = [make_run(tmp_path / "runs", arm, s, [trial(0.01 * (k + 1), 0.01) for k in range(1 if arm == "frozen" else 4)],
+                     provider="fake") for arm in ("frozen", "refine") for s in (0, 1)]
+    rep.report(dirs, tmp_path / "out")
+    t = cost_rows(tmp_path / "out" / "cost.md")
+    assert list(t) == ["frozen", "refine", "total"]      # arms that are absent get no row
+    assert t["frozen"] == ["2", "2", "0", "0", "0.0"] and t["refine"] == ["2", "8", "0", "0", "0.0"]
+    assert t["total"] == ["4", "10", "0", "0", "0.0"]

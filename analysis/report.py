@@ -1,4 +1,4 @@
-"""The report of one cell: `curve.csv`, `selection.csv` and `report.md`.
+"""The report of one cell: `curve.csv`, `selection.csv`, `report.md` and `cost.md`.
 
     python -m analysis.report <run_dir> [<run_dir> ...] --out DIR
 
@@ -8,7 +8,8 @@ pipeline check, not a result. (3) Every comparison in the go/no-go statement is 
 (`analysis.curves.paired_difference`): the refine arm's held-out score at its peak step and at step 0, each minus the
 score at `max_steps`, and the feedback score's change from step 0 to `max_steps`, each over the seeds with a value at
 both steps, with the left-out seeds counted. So a seed dropping out of an average can never pass for a fall. A verdict
-is given only when at least two seeds pair up; otherwise the report says it cannot be answered and why. Standard
+is given only when at least two seeds pair up; otherwise the report says it cannot be answered and why. (4) `cost.md`
+sums the `cost` dict of every trial per arm (an empty dict, as the fake generator leaves, counts as zero). Standard
 output carries only the path of `report.md`; errors go to standard error with a non-zero exit."""
 from __future__ import annotations
 
@@ -52,7 +53,7 @@ SELECTION_TEXT = (
 FILES_TEXT = (
     "`curve.csv` holds the curve for every window (feedback, pilot, held-out, and held-out on each transfer universe), "
     "one row per window, arm and step, with the mean, the interval bounds `lo` and `hi`, and `n`, the number of seeds "
-    "with a value. `selection.csv` holds the selection statistics above at full precision.")
+    "with a value. `selection.csv` holds the selection statistics above at full precision. `cost.md` has the generation cost per arm.")
 FAKE_TEXT = (
     "These runs came from the fake generator, which returns expressions from a fixed list instead of asking a language "
     "model. They are a check that the pipeline runs end to end, not a result.")
@@ -159,8 +160,30 @@ def render(runs, curves: dict[str, pd.DataFrame], sel: pd.DataFrame) -> str:
     return "\n\n".join(blocks) + "\n"
 
 
+COST_TEXT = (
+    "The numbers cover the generations (the calls to the language model that proposed or refined a candidate) of the "
+    "finished runs in this report, summed over each arm's trials from the cost the generator recorded: tokens read, "
+    "tokens written, and seconds spent waiting for the generator. A trial from the fake generator or a failed call "
+    "records no cost and counts as zero. Scoring time is not in them.")
+
+
+def cost_table(runs) -> str:
+    """`cost.md`: one row per arm present, then a total row, summed over the trials' `cost` dicts."""
+    rows, total = [], [0, 0, 0, 0, 0.0]
+    for a in (a for a in ARM_NAMES if any(r.arm == a for r in runs)):
+        ts = [t for r in runs if r.arm == a for t in r.trials]
+        row = [sum(r.arm == a for r in runs), len(ts), *(sum((t.get("cost") or {}).get(k) or 0 for t in ts)
+                                                         for k in ("input_tokens", "output_tokens", "seconds"))]
+        total = [x + y for x, y in zip(total, row)]
+        rows.append([ARM_NAMES[a], *map(str, row[:4]), f"{row[4]:.1f}"])
+    rows.append(["total", *map(str, total[:4]), f"{total[4]:.1f}"])
+    head = ["arm", "runs", "generations", "input tokens", "output tokens", "generation seconds"]
+    return "# Cost\n\n" + COST_TEXT + "\n\n" + _table(head, rows) + "\n"
+
+
 def report(run_dirs, out) -> Path:
-    """Write `curve.csv`, `selection.csv` and `report.md` for one cell into `out`; return the path of `report.md`."""
+    """Write `curve.csv`, `selection.csv`, `cost.md` and `report.md` for one cell into `out`; return the path of
+    `report.md`."""
     runs = load_cell(run_dirs)
     out = Path(out)
     curves = {w: curve(run_dirs, window=w) for w in windows(runs[0].cfg.transfer_to)}
@@ -169,6 +192,7 @@ def report(run_dirs, out) -> Path:
     stacked = pd.concat([c.assign(window=w) for w, c in curves.items()], ignore_index=True)
     stacked[["window", *curves["heldout"].columns]].to_csv(out / "curve.csv", index=False)
     sel.to_csv(out / "selection.csv", index=False)
+    (out / "cost.md").write_text(cost_table(runs))
     path = out / "report.md"
     path.write_text(render(runs, curves, sel))
     return path
