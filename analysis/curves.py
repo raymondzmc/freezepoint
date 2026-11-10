@@ -115,6 +115,26 @@ def interval(values) -> tuple[float, float, float, int]:
     return m, m - h, m + h, n
 
 
+@dataclass(frozen=True)
+class Paired:
+    """A per-seed difference between two steps: its mean, 95% t interval, the seeds it rests on and those left out."""
+    mean: float
+    lo: float
+    hi: float
+    n: int
+    left_out: int
+
+    @property
+    def half_width(self) -> float: return (self.hi - self.lo) / 2
+
+
+def paired_difference(per_run, a: int, b: int) -> Paired:
+    """`value(a) − value(b)` per run, over the runs with a value at both steps (`per_run`: one `run_curve` per run),
+    with the `interval` of those differences; runs missing either value are counted in `left_out`."""
+    d = [v[a] - v[b] for v in per_run if not (math.isnan(v[a]) or math.isnan(v[b]))]
+    return Paired(*interval(d), left_out=len(per_run) - len(d))
+
+
 def _arms(runs: list[Run]) -> list[str]:
     return [a for a in config.ARMS if any(r.arm == a for r in runs)]
 

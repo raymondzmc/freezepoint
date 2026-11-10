@@ -4,10 +4,12 @@
 
 Guarantees. (1) It reads only one finished cell (`analysis.curves.load_cell`), so it cannot mix smoke runs with real
 ones. (2) When the cell's generator is `fake`, the first line after the title of `report.md` says the runs are a
-pipeline check, not a result. (3) The go/no-go statement (does the refine arm's held-out score at `max_steps` sit below
-its peak by more than the 95% interval half-width) is made only when the refine arm has at least two seeds with a
-held-out value at `max_steps`; otherwise the report says it cannot be answered and why. Standard output carries only
-the path of `report.md`; errors go to standard error with a non-zero exit."""
+pipeline check, not a result. (3) Every comparison in the go/no-go statement is paired by seed
+(`analysis.curves.paired_difference`): the refine arm's held-out score at its peak step and at step 0, each minus the
+score at `max_steps`, and the feedback score's change from step 0 to `max_steps`, each over the seeds with a value at
+both steps, with the left-out seeds counted. So a seed dropping out of an average can never pass for a fall. A verdict
+is given only when at least two seeds pair up; otherwise the report says it cannot be answered and why. Standard
+output carries only the path of `report.md`; errors go to standard error with a non-zero exit."""
 from __future__ import annotations
 
 import argparse
@@ -17,7 +19,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from analysis.curves import curve, load_cell, selection_stats
+from analysis.curves import Paired, curve, load_cell, paired_difference, run_curve, selection_stats
 
 ARM_NAMES = {"frozen": "frozen", "refine": "refine", "bestofn": "best-of-N"}
 
@@ -79,33 +81,55 @@ def _seed_count(n: int) -> str:
     return "one seed" if n == 1 else f"{n} seeds"
 
 
-def _statement(ho: pd.DataFrame, fb: pd.DataFrame, n_refine: int, K: int) -> str:
-    """The go/no-go paragraph, from the refine arm's held-out and feedback curves."""
+def _left_out(p: Paired, n_refine: int, a: int, b: int, window: str) -> str:
+    if not p.left_out: return ""
+    one = p.left_out == 1
+    return (f" {p.left_out} of the refine arm's {n_refine} seeds {'was' if one else 'were'} left out because "
+            f"{'its' if one else 'their'} {window} value at step {a} or at step {b} was missing.")
+
+
+def _paired_sentence(label: str, p: Paired, n_refine: int, a: int, b: int, K: int, what: str) -> str:
+    """One held-out comparison, `value(a) − value(b)` paired by seed, with its verdict (or why there is none)."""
+    if p.n < 2:
+        return (f"{label}: this cannot be answered from these runs, because only {_seed_count(p.n)} of the refine arm's "
+                f"{n_refine} {'has' if p.n == 1 else 'have'} a held-out value at both step {a} and step {b}, and an "
+                "interval over seeds needs at least two.")
+    below = p.mean > p.half_width
+    return (f"{label}: paired by seed, the held-out rank IC at step {a} minus that at step {b} averages {_f(p.mean)} "
+            f"over {_seed_count(p.n)}, with 95% interval [{_f(p.lo)}, {_f(p.hi)}] (half-width {_f(p.half_width)})."
+            + _left_out(p, n_refine, a, b, "held-out")
+            + f" The held-out score at step {K} is {'' if below else 'not '}below {what} by more than the half-width "
+            f"of that interval{' (the interval excludes zero)' if below else ''}.")
+
+
+def _statement(refine: list, ho: pd.DataFrame, fb: pd.DataFrame, K: int) -> str:
+    """The go/no-go paragraphs: the refine arm's held-out score at step K against its peak and against step 0, and
+    its feedback score from step 0 to step K, each paired by seed."""
     head = "The question cannot be answered from these runs: "
+    n_refine = len(refine)
     if n_refine == 0:
         return head + "there is no refine arm among them."
     if n_refine < 2:
         return head + f"the refine arm has only {_seed_count(n_refine)}, and an interval over seeds needs at least two."
-    h, f = ho[ho.arm == "refine"].set_index("step"), fb[fb.arm == "refine"].set_index("step")
-    last = h.loc[K]
-    if last.n < 2:
-        return head + (f"only {_seed_count(int(last.n))} of the refine arm's {n_refine} "
-                       f"{'has' if last.n == 1 else 'have'} a held-out value at step {K}, and an interval over seeds "
-                       "needs at least two.")
-    peak_step = int(h["mean"].idxmax())
-    peak = h.loc[peak_step]
-    drop, half = peak["mean"] - last["mean"], (last.hi - last.lo) / 2
-    verdict = (f"The drop is larger than the half-width: the held-out score at step {K} is below its peak by more "
-               "than the half-width of its interval." if drop > half else
-               f"The drop is not larger than the half-width: the held-out score at step {K} is not below its peak by "
-               "more than the half-width of its interval.")
-    return (f"The refine arm's mean held-out rank IC peaks at {_f(peak['mean'])} at step {peak_step} "
-            f"({_seed_count(int(peak.n))}) and is {_f(last['mean'])} at step {K}, the last step "
-            f"({_seed_count(int(last.n))}). The drop from the peak to step {K} is {_f(drop)}; the half-width of the 95% "
-            f"interval at step {K} is {_f(half)}. {verdict} This compares two means over seeds against the interval at "
-            "one step; it is not a paired test.\n\n"
-            f"On the feedback window, which the loop selects on, the refine arm's mean rank IC is "
-            f"{_f(f.loc[0, 'mean'])} at step 0 and {_f(f.loc[K, 'mean'])} at step {K}.")
+    means = ho[ho.arm == "refine"].set_index("step")["mean"]
+    if means.isna().all():
+        return head + "no refine seed has a held-out value at any step."
+    held = [run_curve(r, "heldout") for r in refine]
+    k_star = int(means.idxmax())
+    peak = _paired_sentence("Peak against final", paired_difference(held, k_star, K), n_refine, k_star, K, K,
+                            f"its peak (step {k_star}, the step with the highest mean in the table below)")
+    start = _paired_sentence("Start against final", paired_difference(held, 0, K), n_refine, 0, K, K,
+                             "its step-0 value")
+    f, fbc = fb[fb.arm == "refine"].set_index("step"), paired_difference([run_curve(r, "feedback") for r in refine], K, 0)
+    feedback = (f"Feedback: on the feedback window, which the loop selects on, the refine arm's mean rank IC is "
+                f"{_f(f.loc[0, 'mean'])} at step 0 and {_f(f.loc[K, 'mean'])} at step {K}. Paired by seed, the change "
+                f"from step 0 to step {K} averages {_f(fbc.mean)} over {_seed_count(fbc.n)}, with 95% interval "
+                f"[{_f(fbc.lo)}, {_f(fbc.hi)}]." + _left_out(fbc, n_refine, 0, K, "feedback"))
+    note = ("The start-against-final comparison does not depend on picking a step after the fact, and it is the one "
+            "that answers whether refinement hurts the held-out score across seeds. The peak-against-final comparison "
+            "does depend on it: the peak step is the largest of several noisy means, chosen after seeing them, so that "
+            "comparison overstates the drop.")
+    return f"{peak}\n\n{start}\n\n{note}\n\n{feedback}"
 
 
 def render(runs, curves: dict[str, pd.DataFrame], sel: pd.DataFrame) -> str:
@@ -127,7 +151,8 @@ def render(runs, curves: dict[str, pd.DataFrame], sel: pd.DataFrame) -> str:
                                            for r in sel.itertuples()])
     blocks = [f"# Refinement-count curve: {cfg.split}, {cfg.universe}", *([FAKE_TEXT] if g.provider == "fake" else []),
               "## The cell", cell, ARMS_TEXT, seeds_text, METRIC_TEXT,
-              "## Refine arm: does held-out fall while feedback rises?", _statement(ho, fb, len(seeds.get("refine", [])), K),
+              "## Refine arm: does held-out fall while feedback rises?",
+              _statement([r for r in runs if r.arm == "refine"], ho, fb, K),
               "## Held-out curve", CURVE_TEXT.format(K=K), curve_table,
               "## Selection statistics", SELECTION_TEXT, sel_table,
               "## Files", FILES_TEXT]

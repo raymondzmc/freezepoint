@@ -13,7 +13,7 @@ import pytest
 from scipy import stats
 
 from analysis import report as rep
-from analysis.curves import curve, selection_stats
+from analysis.curves import curve, paired_difference, selection_stats
 from harness.backtest import FactorScore, score_record
 from harness.ledger.ledger import Ledger, Trial
 from harness.ledger.stats import deflated_sharpe, pbo_cscv
@@ -248,13 +248,18 @@ def test_dsr_of_chosen_matches_a_direct_call(tmp_path):
 
 # ---- the report ------------------------------------------------------------------------------------------------
 
-def refine_cell(root, last, jitter, provider="api", seeds=(0, 1, 2), arms=("frozen", "refine", "bestofn")):
-    """Feedback rises 0.01..0.04; held-out goes 0.02, 0.05, 0.03, `last`, each plus the seed's jitter."""
+# Held-out rank IC per seed at steps 0..3 (feedback rises 0.01..0.04, so every step's candidate is the one held).
+FALL = {0: (0.020, 0.050, 0.030, 0.000), 1: (0.021, 0.051, 0.031, 0.003), 2: (0.019, 0.049, 0.029, -0.002)}
+FLAT = {0: (0.03, 0.04, 0.02, 0.035), 1: (0.03, 0.02, 0.04, 0.025), 2: (0.04, 0.03, 0.03, 0.03),
+        3: (0.02, 0.03, 0.03, 0.03)}
+
+
+def refine_cell(root, held, provider="api", arms=("frozen", "refine", "bestofn")):
+    """One run per arm and seed of `held`; feedback rises 0.01..0.04 and held-out follows `held[seed]`."""
     dirs = []
     for arm in arms:
-        for s in seeds:
-            j = jitter[s]
-            ts = [trial(fb, ho + j) for fb, ho in zip((0.01, 0.02, 0.03, 0.04), (0.02, 0.05, 0.03, last))]
+        for s, ho in held.items():
+            ts = [trial(fb, h) for fb, h in zip((0.01, 0.02, 0.03, 0.04), ho)]
             dirs.append(make_run(root, arm, s, ts[:1] if arm == "frozen" else ts, provider=provider))
     return dirs
 
@@ -263,48 +268,102 @@ def statement(md):
     return md.split("## Refine arm")[1].split("\n## ")[0]
 
 
+def para(md, label):
+    """The statement's paragraph that starts with `label`."""
+    (p,) = [p for p in statement(md).split("\n\n") if p.startswith(label)]
+    return p
+
+
+def report_md(tmp_path, dirs):
+    rep.report(dirs, tmp_path / "out")
+    return (tmp_path / "out" / "report.md").read_text()
+
+
+def test_paired_difference_matches_a_hand_computation():
+    per_run = [[0.1, 0.2, 0.05], [0.3, nan, 0.1], [0.2, 0.25, 0.3], [nan, 0.1, 0.1]]
+    p = paired_difference(per_run, 0, 2)
+    d = np.array([0.05, 0.2, -0.1])
+    h = stats.t.ppf(0.975, 2) * d.std(ddof=1) / math.sqrt(3)
+    same([p.mean, p.lo, p.hi, p.half_width], [d.mean(), d.mean() - h, d.mean() + h, h])
+    assert (p.n, p.left_out) == (3, 1)
+    q = paired_difference(per_run, 1, 2)
+    assert (q.n, q.left_out) == (3, 1) and q.mean == pytest.approx(np.mean([0.15, -0.05, 0.0]))
+    one = paired_difference(per_run[:2], 1, 2)
+    assert (one.n, one.left_out) == (1, 1) and np.isnan(one.lo) and np.isnan(one.hi)
+
+
 def test_report_says_held_out_fell_past_the_half_width(tmp_path):
-    rep.report(refine_cell(tmp_path / "runs", 0.0, (0.0, 0.001, -0.001)), tmp_path / "out")
-    s = statement((tmp_path / "out" / "report.md").read_text())
-    h = stats.t.ppf(0.975, 2) * 0.001 / math.sqrt(3)
-    assert "0.0500 at step 1" in s and f"{h:.4f}" in s and "0.0500" in s
-    assert "is below its peak by more than" in s and "is not below" not in s
-    assert "0.0100 at step 0" in s and "0.0400 at step 3" in s
+    md = report_md(tmp_path, refine_cell(tmp_path / "runs", FALL))
+    peak, start = para(md, "Peak against final"), para(md, "Start against final")
+    d = np.array([FALL[s][1] - FALL[s][3] for s in FALL])
+    h = stats.t.ppf(0.975, 2) * d.std(ddof=1) / math.sqrt(3)
+    assert f"averages {d.mean():.4f} over 3 seeds" in peak and f"half-width {h:.4f}" in peak
+    assert "is below its peak (step 1," in peak and "left out" not in peak
+    assert "is below its step-0 value by more than the half-width" in start
+    fb = para(md, "Feedback")
+    assert "0.0100 at step 0 and 0.0400 at step 3" in fb and "averages 0.0300 over 3 seeds" in fb
+    assert "overstates the drop" in statement(md)
 
 
 def test_report_says_held_out_did_not_fall_past_the_half_width(tmp_path):
-    rep.report(refine_cell(tmp_path / "runs", 0.045, (0.0, 0.02, -0.02)), tmp_path / "out")
-    s = statement((tmp_path / "out" / "report.md").read_text())
-    assert "is not below its peak by more than" in s
+    md = report_md(tmp_path, refine_cell(tmp_path / "runs", FLAT))
+    assert "is not below its peak" in para(md, "Peak against final")
+    assert "is not below its step-0 value" in para(md, "Start against final")
+
+
+def test_a_seed_leaving_the_average_is_not_a_drop(tmp_path):
+    """The reviewer's scenario A: held-out never changes for any seed, but seed 0's last candidate has a failed
+    held-out score, so the mean at step 3 loses seed 0's high value."""
+    const = {0: 0.10, 1: 0.02, 2: 0.01, 3: 0.015, 4: 0.02}
+    dirs = [make_run(tmp_path / "runs", "refine", s,
+                     [trial(fb, None if (s == 0 and k == 3) else v) for k, fb in enumerate((0.01, 0.02, 0.03, 0.04))])
+            for s, v in const.items()]
+    md = report_md(tmp_path, dirs)
+    for label, what in (("Peak against final", "its peak"), ("Start against final", "its step-0 value")):
+        p = para(md, label)
+        assert "averages 0.0000 over 4 seeds" in p and f"is not below {what}" in p
+        assert "1 of the refine arm's 5 seeds was left out because its held-out value at step 0 or at step 3" in p
+    assert "is below its" not in statement(md)
+
+
+def test_a_seed_without_a_step_0_value_is_left_out_of_start_against_final(tmp_path):
+    ts = {s: [trial(fb, h) for fb, h in zip((0.01, 0.02, 0.03, 0.04), FALL[s])] for s in FALL}
+    ts[2][0] = trial(valid=False)
+    md = report_md(tmp_path, [make_run(tmp_path / "runs", "refine", s, t) for s, t in ts.items()])
+    start = para(md, "Start against final")
+    assert "over 2 seeds" in start
+    assert "1 of the refine arm's 3 seeds was left out because its held-out value at step 0 or at step 3" in start
+    assert "left out" not in para(md, "Peak against final")
+    assert "1 of the refine arm's 3 seeds was left out because its feedback value" in para(md, "Feedback")
 
 
 def test_report_cannot_answer_with_fewer_than_two_refine_seeds(tmp_path):
-    rep.report(refine_cell(tmp_path / "a", 0.0, (0.0, 0.001), seeds=(0,)), tmp_path / "one")
-    s = statement((tmp_path / "one" / "report.md").read_text())
-    assert "cannot be answered" in s and "the refine arm has only one seed" in s and "is below its peak" not in s
-    rep.report(refine_cell(tmp_path / "b", 0.0, (0.0, 0.001), seeds=(0, 1), arms=("frozen",)), tmp_path / "none")
-    s = statement((tmp_path / "none" / "report.md").read_text())
+    s = statement(report_md(tmp_path / "one", refine_cell(tmp_path / "a", {0: FALL[0]})))
+    assert "cannot be answered" in s and "the refine arm has only one seed" in s and "is below its" not in s
+    s = statement(report_md(tmp_path / "none", refine_cell(tmp_path / "b", FALL, arms=("frozen",))))
     assert "cannot be answered" in s and "no refine arm" in s
 
 
 def test_report_cannot_answer_when_held_out_at_the_last_step_has_one_seed(tmp_path):
     ts = [trial(0.01 * (k + 1), 0.02) for k in range(4)]
     dirs = [make_run(tmp_path / "runs", "refine", 0, ts), make_run(tmp_path / "runs", "refine", 1, [*ts[:3], trial(0.05, None)])]
-    rep.report(dirs, tmp_path / "out")
-    s = statement((tmp_path / "out" / "report.md").read_text())
-    assert "cannot be answered" in s and "only one seed of the refine arm's 2 has a held-out value at step 3" in s
+    md = report_md(tmp_path, dirs)
+    for label in ("Peak against final", "Start against final"):
+        p = para(md, label)
+        assert "cannot be answered" in p and "only one seed of the refine arm's 2 has a held-out value at both step 0 " \
+            "and step 3" in p
 
 
 def test_report_flags_the_fake_generator(tmp_path):
-    rep.report(refine_cell(tmp_path / "fake", 0.0, (0, 0, 0), provider="fake"), tmp_path / "f")
+    rep.report(refine_cell(tmp_path / "fake", FALL, provider="fake"), tmp_path / "f")
     lines = [ln for ln in (tmp_path / "f" / "report.md").read_text().splitlines() if ln.strip()]
     assert lines[0].startswith("# ") and "fake generator" in lines[1] and "not a result" in lines[1]
-    rep.report(refine_cell(tmp_path / "api", 0.0, (0, 0, 0)), tmp_path / "a")
+    rep.report(refine_cell(tmp_path / "api", FALL), tmp_path / "a")
     assert "fake generator" not in (tmp_path / "a" / "report.md").read_text()
 
 
 def test_command_line(tmp_path, capsys):
-    dirs = refine_cell(tmp_path / "runs", 0.0, (0.0, 0.001, -0.001))
+    dirs = refine_cell(tmp_path / "runs", FALL)
     out = tmp_path / "out"
     assert rep.main([*map(str, dirs), "--out", str(out)]) == 0
     assert capsys.readouterr().out.strip().splitlines()[-1] == str(out / "report.md")
