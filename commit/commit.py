@@ -52,7 +52,7 @@ def from_runs(patterns, out):
     chosen = sorted((json.loads((r / "chosen.json").read_text()) for r in runs), key=lambda c: c["run"])
     configs = {json.loads((r / "chosen.json").read_text())["run"]: yaml.safe_load((r / "config.yaml").read_text())
                for r in runs}
-    print(f"from-runs: committing {len(runs)} runs:", *sorted(r.name for r in runs), sep="\n  ")
+    print(f"from-runs: committing {len(runs)} runs:", *sorted(r.name for r in runs), sep="\n  ", file=sys.stderr)
     _write({"artifacts": chosen, "configs": configs, "made": _now()}, out)
 
 def anchor(out):
