@@ -7,7 +7,7 @@ import pytest
 
 from harness.pit.news import NewsIndex
 from harness.pit.registry import LookAheadError, Registry
-from harness.pit.tools import make_registry
+from harness.pit.tools import make_registry, rebase
 
 COLS = ["published", "stock_symbol", "article_title", "publisher", "url"]
 
@@ -30,7 +30,7 @@ def synth(tmp_path):
                                        ("AAPL", "2019-03-01 00:00:00")], "UTC")
     return root
 
-def _reg(tmp_path, root): return make_registry("cn", tmp_path / "calls.jsonl", news_root=root)
+def _reg(tmp_path, root, cutoff=0): return make_registry("cn", tmp_path / "calls.jsonl", news_root=root, news_cutoff_hour_utc=cutoff)
 
 def test_naive_published_is_utc(synth):
     df = NewsIndex(root=synth).query(["AAPL"], pd.Timestamp("2019-03-04", tz="UTC"), pd.Timestamp("2019-03-05", tz="UTC"))
@@ -46,11 +46,17 @@ def test_news_tool_cutoff_exclusive(synth, tmp_path):
     assert list(df.columns) == COLS and set(df["stock_symbol"]) == {"AAPL"}
 
 def test_news_tool_cutoff_hour(synth, tmp_path):
-    df = _reg(tmp_path, synth).call("news", "2019-03-05", symbols=["AAPL"], days=1, cutoff_hour_utc=6)
+    df = _reg(tmp_path, synth, cutoff=6).call("news", "2019-03-05", symbols=["AAPL"], days=1)
     cut = pd.Timestamp("2019-03-05 06:00", tz="UTC")
     assert df["published"].max() == pd.Timestamp("2019-03-05 05:59:59", tz="UTC") and (df["published"] < cut).all()
     assert pd.Timestamp("2019-03-05 00:00", tz="UTC") in set(df["published"])
-    with pytest.raises(ValueError): _reg(tmp_path, synth).call("news", "2019-03-05", symbols=["AAPL"], cutoff_hour_utc=25)
+    with pytest.raises(ValueError): _reg(tmp_path, synth, cutoff=25)
+    assert "6h" in _reg(tmp_path, synth, cutoff=6).manifest()["news"]["doc"]
+
+def test_news_cutoff_is_not_a_call_argument(synth, tmp_path):
+    reg = _reg(tmp_path, synth)
+    with pytest.raises(TypeError): reg.call("news", "2019-03-05", symbols=["AAPL"], cutoff_hour_utc=24)
+    assert not (tmp_path / "calls.jsonl").exists()
 
 def test_news_reads_only_touched_years(synth):
     bad = synth / "year=2018"; bad.mkdir(); (bad / "x.parquet").write_text("not parquet")
@@ -85,6 +91,38 @@ def test_registry_returns_extracts_after_checking_frame(tmp_path):
     reg2 = Registry(tmp_path / "c2.jsonl")
     reg2.register("plain")(lambda as_of: pd.DataFrame({"date": [as_of]}))
     assert isinstance(reg2.call("plain", "2022-01-04"), pd.DataFrame)
+
+def _raw():
+    idx = pd.MultiIndex.from_product([["A", "B"], pd.date_range("2022-01-03", periods=3)], names=["instrument", "datetime"])
+    return pd.DataFrame({"$open": [9, 10, 11, 90, 100, 110.], "$high": [12, 14, 16, 120, 140, 160.], "$low": [8, 9, 10, 80, 90, 100.],
+                         "$close": [10, 12, 20, 100, 110, 200.], "$volume": [5, 6, 10, 50, 60, 100.], "$factor": [2., 2, 2, 1, 1, 1]}, index=idx)
+
+def test_rebase_ends_at_one_and_keeps_bar_shape():
+    raw, f = _raw(), ["$open", "$high", "$low", "$close", "$volume", "$factor"]
+    out = rebase(raw, f)
+    assert (out["$close"].groupby(level="instrument").last() == 1.0).all() and list(out.columns) == f
+    assert ((out["$high"] / out["$low"]) - raw["$high"] / raw["$low"]).abs().max() < 1e-12
+    assert out.loc[("A", pd.Timestamp("2022-01-05")), "$volume"] == 1.0
+
+def test_rebase_unchanged_by_scaling_one_instrument():
+    raw, f = _raw(), ["$open", "$close", "$volume", "$factor"]
+    scaled = raw.copy(); scaled.loc["A"] = scaled.loc["A"].to_numpy() * 7     # what a later split does to an adjusted series
+    pd.testing.assert_frame_equal(rebase(raw, f), rebase(scaled, f))
+
+def test_rebase_close_not_requested_and_bad_base():
+    raw = _raw(); raw.loc[("A", pd.Timestamp("2022-01-05")), "$close"] = 0.0; raw.loc[("B", pd.Timestamp("2022-01-05")), "$volume"] = float("nan")
+    out = rebase(raw, ["$high"])
+    assert list(out.columns) == ["$high"] and out.loc[("A", pd.Timestamp("2022-01-05")), "$high"] == 16 / 12   # base is A's last non-zero close
+    assert out.loc[("B", pd.Timestamp("2022-01-05")), "$high"] == 160 / 200
+    raw.loc["A", "$close"] = float("nan")
+    assert rebase(raw, ["$close"]).loc["A"]["$close"].isna().all() and rebase(raw, ["$close"]).loc["B"]["$close"].iloc[-1] == 1.0
+    raw.loc["B", "$volume"] = 0.0
+    assert rebase(raw, ["$volume"]).loc["B"]["$volume"].isna().all()
+
+@pytest.mark.data
+def test_prices_rebased_across_a_later_split(us_registry):
+    df = us_registry.call("prices", "2014-06-05", instruments=["AAPL"], fields=["$close"], lookback_days=30)   # 7:1 split on 2014-06-09
+    assert df["$close"].iloc[-1] == 1.0 and df.index.get_level_values("datetime").max() == pd.Timestamp("2014-06-05")
 
 @pytest.mark.data
 def test_prices_never_after_as_of(cn_registry):
