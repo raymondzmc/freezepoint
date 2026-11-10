@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+data/raw/
+data/cache/
+data/fnspid/
+data/models/
+*.parquet
+*.csv
+*.zip
+*.tar.gz
+runs/
+logs/
+.env
