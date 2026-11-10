@@ -29,17 +29,18 @@ class Tool:
     value_dependent: bool = False
     availability_col: str | None = None
     doc: str = ""
+    returns: Callable | None = None     # maps the checked frame to what the caller receives (e.g. a list)
 
 @dataclass
 class Registry:
     log_path: pathlib.Path
     tools: dict[str, Tool] = field(default_factory=dict)
 
-    def register(self, name, lag_days=0, date_col="date", value_dependent=False, availability_col=None, doc=""):
+    def register(self, name, lag_days=0, date_col="date", value_dependent=False, availability_col=None, doc="", returns=None):
         def deco(fn):
             if value_dependent and not availability_col:
                 raise ValueError(f"{name}: a value-dependent tool must name its availability column")
-            self.tools[name] = Tool(name, fn, lag_days, date_col, value_dependent, availability_col, doc or fn.__doc__ or "")
+            self.tools[name] = Tool(name, fn, lag_days, date_col, value_dependent, availability_col, doc or fn.__doc__ or "", returns)
             return fn
         return deco
 
@@ -56,7 +57,7 @@ class Registry:
             if latest > allowed:
                 raise LookAheadError(f"{name}: returns data dated {latest} but as_of {as_of} with lag {tool.lag_days}d allows <= {allowed}")
         self._log(name, as_of, args, out)
-        return out
+        return tool.returns(out) if tool.returns else out
 
     def _log(self, name, as_of, args, out):
         h = hashlib.sha256(pd.util.hash_pandas_object(out).values.tobytes() if isinstance(out, pd.DataFrame) else repr(out).encode()).hexdigest()[:16]
