@@ -1,6 +1,7 @@
 """Run configuration. One YAML file describes one arm, and the run's identity is a hash of the config object
 (not of the file's text), so comments and key order never change an id while any changed value, including one
-applied in memory with `dataclasses.replace`, does. `load` rejects what it does not understand: an unknown key
+applied in memory with `dataclasses.replace`, does; the one exception is `seeds`, which is recorded but not hashed
+(the run's own seed is in its id). `load` rejects what it does not understand: an unknown key
 in a hashed config must not pass silently."""
 from __future__ import annotations
 
@@ -145,12 +146,18 @@ def to_dict(cfg: RunConfig) -> dict:
 
 
 def run_id(cfg: RunConfig, seed: int) -> str:
-    canonical = json.dumps(to_dict(cfg), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    """`<arm>-<split>-s<seed>-<hash>`: the hash is over the config without `seeds`, since the seed is already in the id
+    and adding a seed to the list later must not change the ids of the runs already made."""
+    d = to_dict(cfg)
+    del d["seeds"]
+    canonical = json.dumps(d, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     sha = hashlib.sha256(canonical.encode()).hexdigest()
     return f"{cfg.arm}-{cfg.split}-s{seed}-{sha[:8]}"
 
 
 def run_dir(cfg: RunConfig, seed: int, root="runs") -> Path:
+    """The run's directory under `root`, created with the effective `config.yaml` in it; `cfg` is validated first."""
+    validate(cfg)
     d = Path(root) / run_id(cfg, seed)
     d.mkdir(parents=True, exist_ok=True)
     (d / "config.yaml").write_text(yaml.safe_dump(to_dict(cfg), sort_keys=False))

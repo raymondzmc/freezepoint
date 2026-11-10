@@ -200,6 +200,13 @@ def test_two_cells_mixed_raise_and_name_the_fields(tmp_path):
         selection_stats([a, c])
 
 
+def test_runs_whose_configs_list_different_seeds_are_one_cell(tmp_path):
+    a = make_run(tmp_path, "frozen", 0, [trial(0.01)])
+    more = replace(cfg_for("refine"), seeds=(0, 1, 2, 3, 4, 5))
+    b = make_run(tmp_path, "refine", 5, [trial(0.01)] * 4, cfg=more)
+    assert set(selection_stats([a, b]).seed) == {0, 5}
+
+
 def test_duplicated_arm_and_seed_raises(tmp_path):
     a = make_run(tmp_path, "refine", 0, [trial(0.01)] * 4)
     copy = tmp_path / "elsewhere" / a.name

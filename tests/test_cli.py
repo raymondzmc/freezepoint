@@ -19,6 +19,7 @@ from loop.generator import DEFAULT_FAKE_EXPRS
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 QLIB = pathlib.Path.home() / ".qlib" / "qlib_data"
+REAL_MISSING_DATA = cli.missing_data      # the `stubs` fixture replaces it
 FILES = ("config.yaml", "provenance.json", "ledger.jsonl", "calls.jsonl", "chosen.json", "done")
 
 
@@ -52,6 +53,7 @@ def stubs(monkeypatch):
     monkeypatch.setattr(cli, "run_arm", arm)
     monkeypatch.setattr(cli, "score_run", score)
     monkeypatch.setattr(cli, "proposal_context", context)
+    monkeypatch.setattr(cli, "missing_data", lambda cfg: [])
     return log
 
 
@@ -131,6 +133,30 @@ def test_the_lock_is_released_when_the_process_ends(tmp_path):
     finally:
         p.kill(); p.wait(timeout=20)
     assert lock_is_free(runs, rid)
+
+
+@pytest.mark.parametrize("missing", ["cn", "us"])
+def test_preflight_refuses_to_start_without_every_regions_data(tmp_path, stubs, capsys, monkeypatch, missing):
+    """The real check against a data root that holds only the other region: nothing is generated or created."""
+    from harness.pit import tools
+    root = tmp_path / "qlib"
+    for region, sub in (("cn", "cn_data"), ("us", "us_data")):
+        if region != missing:
+            (root / sub / "calendars").mkdir(parents=True); (root / sub / "calendars" / "day.txt").write_text("")
+    monkeypatch.setattr(tools, "QLIB_DATA", root)
+    monkeypatch.setattr(cli, "missing_data", REAL_MISSING_DATA)
+    cfg = write_config(tmp_path)          # csi300 at home, csi500 and sp500 transfer: needs both regions
+    runs = tmp_path / "runs"
+    assert main(cfg, "--seed", 0, "--provider", "fake", "--runs-dir", runs) != 0
+    out, err = capsys.readouterr()
+    assert out == "" and f"no Qlib data for region '{missing}'" in err and stubs == []
+    assert [p.name for p in runs.iterdir()] == [f"{config.run_id(fake_cfg(cfg), 0)}.lock"]
+
+
+def test_preflight_names_each_missing_region_once(tmp_path, monkeypatch):
+    from harness.pit import tools
+    monkeypatch.setattr(tools, "QLIB_DATA", tmp_path / "nothing")
+    assert REAL_MISSING_DATA(fake_cfg(write_config(tmp_path))) == ["cn", "us"]
 
 
 def test_seed_not_in_config_seeds_fails(tmp_path, stubs, capsys):

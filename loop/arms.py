@@ -23,6 +23,7 @@ from harness.backtest import evaluate, score_record
 from harness.factors import validate
 from harness.ledger.ledger import Ledger, LoopView, Trial
 from loop.config import RunConfig, region_of, run_dir, run_id
+from loop.config import validate as validate_config
 from loop.generator import FEEDBACK_KEYS, Generator
 
 
@@ -84,7 +85,9 @@ class _Run:
 def run_arm(cfg: RunConfig, seed: int, gen: Generator, ledger: Ledger, evaluate=evaluate, *, context: str = "",
             root="runs", tool_log_span: tuple[int, int] | None = None) -> str | None:
     """Run `cfg.arm` for `seed`; write `chosen.json` in the run directory and return the chosen trial id, or None
-    when no candidate was valid and scored."""
+    when no candidate was valid and scored. `cfg` is validated first, so a config built in memory cannot skip the
+    equal-compute check."""
+    validate_config(cfg)
     if cfg.stopping.rule != "none":
         raise ValueError(f"stopping.rule {cfg.stopping.rule!r} is not implemented in this plan; use 'none'")
     if cfg.verifier.metric != "ic":

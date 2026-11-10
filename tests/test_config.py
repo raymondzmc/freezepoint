@@ -94,7 +94,7 @@ def test_identity_ignores_comments_and_key_order_but_not_values(tmp_path):
     p = tmp_path / "r.yaml"
     p.write_text("# a new comment\n" + yaml.safe_dump(reordered, sort_keys=False) + "\n# trailing\n")
     assert C.run_id(C.load(p), 0) == base
-    changes = [("universe", "csi500"), ("seeds", [0, 1]),
+    changes = [("universe", "csi500"),
                ("generator.model", "other"), ("generator.max_output_tokens", 4096), ("budget.tokens_per_arm", 1),
                ("verifier.window_days", 500), ("stopping.rule", "fixed_k"), ("control_generator.model", "x"),
                ("transfer_to", ["csi500"])]
@@ -106,6 +106,22 @@ def test_identity_ignores_comments_and_key_order_but_not_values(tmp_path):
         else:
             e[node] = val
         assert C.run_id(C.load(write(tmp_path, e)), 0) != base, key
+
+
+def test_seeds_list_is_not_part_of_the_id_but_is_recorded(tmp_path):
+    """Adding a sixth seed later must not orphan the first five: the seed is in the id, the list is not hashed."""
+    cfg = shipped()
+    more = dataclasses.replace(cfg, seeds=(0, 1, 2, 3, 4, 5))
+    assert C.run_id(more, 0) == C.run_id(cfg, 0) and C.run_id(more, 5) != C.run_id(more, 0)
+    d = C.run_dir(more, 5, root=tmp_path)
+    assert yaml.safe_load((d / "config.yaml").read_text())["seeds"] == [0, 1, 2, 3, 4, 5]
+
+
+def test_run_dir_validates_a_config_built_in_memory(tmp_path):
+    bad = dataclasses.replace(shipped(), budget=dataclasses.replace(shipped().budget, n_candidates=3))
+    with pytest.raises(ValueError, match="n_candidates"):
+        C.run_dir(bad, 0, root=tmp_path)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_in_memory_change_changes_id():

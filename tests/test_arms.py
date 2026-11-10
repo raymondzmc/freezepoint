@@ -285,6 +285,17 @@ def test_stopping_rule_other_than_none_raises(tmp_path):
         run_arm(cfg, 0, gen, Ledger(tmp_path / "l.jsonl"), fake_evaluate(), root=tmp_path / "runs")
     assert gen.calls == [] and not (tmp_path / "l.jsonl").exists()
 
+@pytest.mark.parametrize("change", [
+    lambda c: replace(c, budget=replace(c.budget, n_candidates=c.budget.max_steps)),     # unequal compute
+    lambda c: replace(c, universe="csi100"),
+    lambda c: replace(c, arm="bestofn", generator=replace(c.generator, provider="local")),
+])
+def test_run_arm_validates_a_config_built_in_memory(tmp_path, change):
+    gen = SpyGenerator(["$close"])
+    with pytest.raises(ValueError):
+        run_arm(change(cfg_for("refine")), 0, gen, Ledger(tmp_path / "l.jsonl"), fake_evaluate(), root=tmp_path / "r")
+    assert gen.calls == [] and not (tmp_path / "l.jsonl").exists() and not (tmp_path / "r").exists()
+
 def test_metric_other_than_ic_raises(tmp_path):
     cfg = cfg_for("refine", verifier=replace(BASE.verifier, metric="ls_sharpe"))
     with pytest.raises(ValueError, match="not implemented"):

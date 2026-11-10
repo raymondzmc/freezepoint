@@ -2,7 +2,7 @@
 one effective config that differs only in `arm`.
 
 Guarantees. (1) Every function takes only one finished cell: a directory without `done`, runs whose configs differ in
-anything but `arm`, two runs with the same arm and seed, and a run whose trials are not exactly its arm's budget with
+anything but `arm` (and the `seeds` list, which is not part of a run's identity), two runs with the same arm and seed, and a run whose trials are not exactly its arm's budget with
 steps `0..n-1` once each (what two live loops appending to one run would leave) each raise ValueError naming the
 directories (and the fields or the steps found), so smoke runs can never be averaged with real ones. So do a run
 without `provenance.json` and runs whose provenance differs in a field of `loop.provenance.COMPARED` (prompts, source,
@@ -97,7 +97,7 @@ def load_cell(run_dirs) -> list[Run]:
     ref = _flat(config.to_dict(runs[0].cfg))
     for r in runs[1:]:
         cur = _flat(config.to_dict(r.cfg))
-        diff = sorted(k for k in ref.keys() | cur.keys() if k != "arm" and ref.get(k) != cur.get(k))
+        diff = sorted(k for k in ref.keys() | cur.keys() if k not in ("arm", "seeds") and ref.get(k) != cur.get(k))
         if diff:
             raise ValueError(f"{runs[0].path} and {r.path} belong to different cells: their configs differ in {diff}")
         prov = sorted(k for k in provenance.COMPARED if runs[0].provenance.get(k) != r.provenance.get(k))

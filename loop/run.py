@@ -19,7 +19,8 @@ trials record that call's line range (0-based, end exclusive) as `tool_log_span`
 the run id, as its last line; everything else goes to standard error. Exit 0 on success, non-zero otherwise, and an
 exception never leaves `done` behind. (6) A fresh run writes `provenance.json` (`loop.provenance`: git commit,
 prompt and source hashes, data lock files, library versions, the split's windows) into its directory before the arm
-starts. Not in this version: a resumed run (scoring a finished arm) does not re-check its provenance against the code
+starts, after a preflight has checked that the Qlib data of the home universe's region and of every transfer
+universe's region is on disk (if one is missing it exits non-zero and starts nothing). Not in this version: a resumed run (scoring a finished arm) does not re-check its provenance against the code
 that resumes it."""
 from __future__ import annotations
 
@@ -33,7 +34,7 @@ from pathlib import Path
 
 from harness import splits
 from harness.ledger.ledger import Ledger
-from harness.pit.tools import make_registry
+from harness.pit.tools import data_dir, data_present, make_registry
 from loop import config, provenance
 from loop.arms import run_arm
 from loop.generator import DEFAULT_FAKE_EXPRS, make_generator
@@ -71,6 +72,12 @@ def proposal_context(cfg: config.RunConfig, run_dir: Path) -> tuple[str, tuple[i
     text = (f"The universe is {cfg.universe}, which had {len(names)} member stocks on {fb.end}. The factor is "
             f"scored on daily data from {fb.start} to {fb.end}.")
     return text, (start, _lines(log))
+
+
+def missing_data(cfg: config.RunConfig) -> list[str]:
+    """The regions, of the home universe and of every transfer universe, whose Qlib data is not on disk."""
+    regions = dict.fromkeys(config.region_of(u) for u in (cfg.universe, *cfg.transfer_to))
+    return [r for r in regions if not data_present(r)]
 
 
 def _write_done(d: Path) -> None:
@@ -169,6 +176,11 @@ def _locked(args, cfg: config.RunConfig, rid: str) -> int:
         with contextlib.redirect_stdout(sys.stderr):
             _score_only(cfg, rid, d)
     else:
+        if missing := missing_data(cfg):     # preflight: a run that cannot be scored is not started
+            for r in missing:
+                _say(f"error: no Qlib data for region {r!r} ({data_dir(r) / 'calendars' / 'day.txt'} does not exist), "
+                     f"which {cfg.universe} or a transfer universe in {list(cfg.transfer_to)} needs; nothing was started")
+            return 2
         with contextlib.redirect_stdout(sys.stderr):
             _run(cfg, args.seed, rid, args.runs_dir)
     print(rid, flush=True)
