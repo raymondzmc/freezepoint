@@ -60,7 +60,7 @@ def test_text_at_the_cap_is_accepted():
     "$close", "Mean($close, 5) / $close - 1", "($close-$open)/$open", "Corr($close, Log($volume+1), 10)",
     "Slope($close, 5)/$close", "IdxMax($high, 5)/5", "IdxMin($low, 10) / 10", "Greater($high-$low, Abs($high-Ref($close, 1)))",
     "($high-$low)/($close+1e-12)", "If($close > Ref($close, 1), 1, -1)", "If($close >= $open, $volume, 0 - $volume)",
-    "Ref($close, 0) / $close", "Std($close, 20) / $close", "Rsquare($close, 5)", "Resi($close, 5) / $close",
+    "EMA($close, 0.5) / $close", "Std($close, 20) / $close", "Rsquare($close, 5)", "Resi($close, 5) / $close",
     "Quantile($close, 5, 0.8) / $close", "Rank($close, 10)", "Cov($close, $volume, 5)", "EMA($close, 5) / $close",
     "WMA($close, 5) / $close", "Mad($close, 5) / $close", "Sum(Greater($close - Ref($close, 1), 0), 5)",
     "Power($close / Ref($close, 1), 2)", "Sign($close - Ref($close, 1))", "Less($open, $close)", "Max($high, 5) / $close",
@@ -72,6 +72,49 @@ def test_legitimate_expressions_pass(expr):
 @pytest.mark.parametrize("expr", ["-$close", "If(~($close > $open), 1, 0)", "Mean($close, 5", "Mean $close", "5Mean($close, 5)", "5"])
 def test_allowed_tokens_that_qlib_cannot_build_are_rejected(expr):
     ok, why = validate(expr); assert not ok and why
+
+@pytest.mark.parametrize("expr, words", [
+    ("Ref($close, 0) / $close", ["Ref", "0", "positive integer"]),
+    ("Delta($close, 0)", ["Delta", "0"]),
+    ("Mean($close, 0)", ["Mean", "0"]),
+    ("Mean($close, 5 - 5)", ["Mean", "0"]),
+    ("Mean($close, $volume)", ["Mean", "expression"]),
+    ("Ref($close, Mean($close, 5))", ["Ref", "expression"]),
+    ("Mean($close, 2.5)", ["Mean", "2.5"]),
+    ("Std($close, 1 > 0)", ["Std", "True"]),            # a comparison of numbers is a bool, not an integer
+    ("Ref($close, 2 > 1)", ["Ref", "True"]),
+    ("EMA($close, 1.5)", ["EMA", "1.5"]),
+    ("EMA($close, 0)", ["EMA", "0"]),
+    ("EMA($close, 1.0)", ["EMA", "1.0"]),
+    ("Corr($close, $volume, 0)", ["Corr", "0"]),
+    ("Quantile($close, 0, 0.8)", ["Quantile", "0"]),
+])
+def test_window_and_offset_must_be_positive_integers(expr, words):
+    ok, why = validate(expr)
+    assert not ok and all(w in why for w in words), why
+
+@pytest.mark.parametrize("expr", ["EMA($close, 5)", "EMA($close, 0.5)", "EMA($close, 0.05) / $close", "Ref($close, 1)",
+                                  "Mean($close, 2 + 3)"])
+def test_positive_integer_windows_and_ema_smoothing_factors_pass(expr):
+    ok, why = validate(expr); assert ok, why
+
+@pytest.mark.parametrize("expr", ["$close < $open < $high", "If($low <= $close <= $high, 1, 0)", "$close > $open > 0",
+                                  "If(($close > $open) & ($open > $low < $high), 1, 0)"])
+def test_chained_comparisons_are_rejected(expr):
+    ok, why = validate(expr); assert not ok and "chained" in why, why
+
+def test_negative_window_still_says_future():
+    for expr in ("Mean($close, -5)", "Ref($close, 0 - 2)", "EMA($close, -0.5)"):
+        ok, why = validate(expr); assert not ok and "future" in why, (expr, why)
+
+HOSTILE = ["__import__('os').system('true')", "$close.__class__", "().__class__", "'abc'", "lambda x: x", "[1, 2]",
+           "{1: 2}", "$close[0]", "$close ** 2", "$close = 1", "$close; 1", "Mean($close, 5).mean()", "eval('1')",
+           "Mean(__builtins__, 5)", "$close if 1 else 0", "not $close", "$close and $open", "$close @ $open"]
+
+@pytest.mark.parametrize("expr", HOSTILE)
+def test_hostile_text_never_reaches_the_parse(monkeypatch, expr):
+    monkeypatch.setattr(factors, "_parse", lambda e: pytest.fail(f"hostile text reached the parse: {e!r}"))
+    assert not validate(expr)[0]
 
 def test_unknown_region_is_rejected():
     assert not validate("$close", region="jp")[0]

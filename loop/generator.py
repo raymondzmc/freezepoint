@@ -39,7 +39,7 @@ DEFAULT_FAKE_EXPRS = (
     "$volume / Mean($volume, 20)",
 )
 
-_FENCE = re.compile(r"```[^\n`]*\n(.*?)```", re.DOTALL)
+_FENCE = re.compile(r"```[^\n`]*\n(.*?)```|```([^\n`]+)```", re.DOTALL)   # a block, or a fence on one line
 _EXPR_LINE = re.compile(r"^(?:\$|\(|(?:" + "|".join(sorted(ALLOWED_OPS)) + r")\b)")
 
 class Generator(Protocol):
@@ -48,11 +48,11 @@ class Generator(Protocol):
     def refine(self, expr: str, feedback: dict, history: list[dict], seed: int, *, context: str = "") -> str: ...
 
 def parse_expression(text: str) -> str:
-    """The last non-empty fenced block, else the last line starting with `$`, `(` or an operator name, else the
-    stripped text itself. Never raises."""
+    """The last non-empty fenced block (three backticks on their own lines, or around the expression on one line),
+    else the last line starting with `$`, `(` or an operator name, else the stripped text itself. Never raises."""
     text = text or ""
-    for block in reversed(_FENCE.findall(text)):
-        if block.strip(): return block.strip()
+    for block, inline in reversed(_FENCE.findall(text)):
+        if (block or inline).strip(): return (block or inline).strip()
     for line in reversed(text.splitlines()):
         if _EXPR_LINE.match(line.strip()): return line.strip()
     return text.strip()

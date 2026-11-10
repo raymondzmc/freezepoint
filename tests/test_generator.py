@@ -28,6 +28,11 @@ def test_parse_expression_several_blocks_takes_the_last():
     assert parse_expression("```\n$open\n```\nbetter:\n```\n$close\n```") == "$close"
 def test_parse_expression_language_tagged_fence():
     assert parse_expression("here\n```python\nMean($close, 5)\n```") == "Mean($close, 5)"
+def test_parse_expression_one_line_fence():
+    assert parse_expression("```Mean($close, 5) / $close```") == "Mean($close, 5) / $close"
+    assert parse_expression("I would use\n``` $close / Ref($close, 5) ```\n") == "$close / Ref($close, 5)"
+    assert parse_expression("```\n$open\n```\nor better:\n```Rank($close, 5)```") == "Rank($close, 5)"
+    assert parse_expression("```Rank($close, 5)```\nno, rather:\n```\n$open\n```") == "$open"
 def test_parse_expression_unfenced_trailing_line():
     assert parse_expression("I think this works.\nRank($close)\nthat is all") == "Rank($close)"
     assert parse_expression("text\n($close - $open) / $open") == "($close - $open) / $open"

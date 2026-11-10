@@ -30,9 +30,11 @@ def make_frame(n_days=70, n_names=40, factor=None, label=None, seed=0):
     fac = lab.copy() if factor is None else factor(lab, idx)
     return pd.DataFrame({"f": fac, "y": lab}, index=idx)
 
+@pytest.mark.data
 def test_momentum_factor_scores_on_csi300(cn):
     fs = evaluate("$close / Ref($close, 20) - 1", Window("2019-01-01", "2019-12-31"), "csi300", "cn")
     assert fs.ok and fs.n_days > 200 and abs(fs.ic) < 0.2 and len(fs.daily_ls) == fs.n_days
+@pytest.mark.data
 def test_constant_expression_fails_cleanly(cn):
     fs = evaluate("$close * 0 + 1", Window("2019-01-01", "2019-03-31"), "csi300", "cn")
     assert not fs.ok and "ic" in fs.reason.lower()
@@ -85,6 +87,9 @@ def test_fewer_than_60_days_fails_with_count_in_reason():
 def test_constant_or_nan_factor_fails_with_ic_reason_even_when_long(factor):
     fs = score_frame(make_frame(n_days=100, factor=factor))
     assert not fs.ok and "IC" in fs.reason and math.isnan(fs.ic) and fs.dates == []
+def test_no_ic_reason_does_not_blame_the_expression_for_thin_coverage():
+    fs = score_frame(make_frame(n_days=100, n_names=20))        # a fine factor, but every day has too few names
+    assert not fs.ok and "IC" in fs.reason and "too few names" in fs.reason and "constant" in fs.reason
 def test_infinite_values_are_missing():
     def with_inf(y, idx):
         out = y.copy(); d = idx.get_level_values(1); names = idx.get_level_values(0)
@@ -143,6 +148,15 @@ def test_qlib_error_while_computing_becomes_a_failed_score(no_qlib, monkeypatch)
     assert not fs.ok and "KeyError" in fs.reason and "$close not found for SH600000" in fs.reason
     assert math.isnan(fs.ic) and fs.daily_ls == [] and fs.dates == []
     assert evaluate("Mean($close, 5) / $close", w, "csi300", "cn") == fs and len(calls) == 1   # memoised, like any
+
+@pytest.mark.parametrize("error", [MemoryError("out of memory"), OSError(24, "Too many open files"),
+                                   FileNotFoundError("features/sh600000/close.day.bin")])
+def test_memory_and_os_errors_while_loading_propagate_and_are_not_memoised(no_qlib, monkeypatch, error):
+    def broken(*a): raise error
+    monkeypatch.setattr(backtest, "_load", broken)
+    with pytest.raises(type(error)):
+        evaluate("Mean($close, 5) / $close", Window("2019-01-01", "2019-03-31"), "csi300", "cn")
+    assert backtest._MEMO == {}
 
 @pytest.fixture
 def empty_data(monkeypatch, tmp_path):

@@ -7,7 +7,7 @@ arithmetic is a pure function of an (instrument, datetime) frame, `score_frame`,
 can never be mistaken for a weak result; `score_dict` writes strict JSON (non-finite floats become null). Every score
 carries `n_names`, the mean number of valid names per kept day (NaN, so null in the ledger, for a failed score). (5) Exactly
 one kind of exception becomes a failed score: one raised while Qlib loads a validated expression (`_load`; the
-reason names it). Missing region data (`qlib_init`'s check that the calendar is present, run before
+reason names it), other than `MemoryError` and `OSError`, which propagate and are not memoised. Missing region data (`qlib_init`'s check that the calendar is present, run before
 validation and outside any `try`) and an unknown region raise out of `evaluate`, so a data fault can never be recorded
 as the candidate's; so does an error in our own arithmetic (`score_frame`). Data that is present but damaged beyond
 its calendar is not detected as such and shows up as failed scores."""
@@ -81,7 +81,8 @@ def score_frame(df: pd.DataFrame, quantile: float = 0.2) -> FactorScore:
         bottom = np.lexsort((names, f))[:k]
         ics.append(ic); ls.append(float(y[top].mean() - y[bottom].mean()))
         kept.append(str(pd.Timestamp(dates[rows[0]]).date())); tops.append(frozenset(names[top])); sizes.append(len(r))
-    if not ics: return _failed("no IC: the expression is constant or NaN across the universe")
+    if not ics: return _failed("no IC: no day had a defined rank IC, either because the expression is constant or "
+                               f"missing across the universe or because too few names (fewer than {MIN_NAMES}) had data")
     if len(ics) < MIN_DAYS: return _failed(f"only {len(ics)} usable days, below the floor of {MIN_DAYS}")
     turn = [len(b - a) / len(b) for a, b in itertools.pairwise(tops)]
     ic_mean, ls_mean = float(np.mean(ics)), float(np.mean(ls))
@@ -97,7 +98,9 @@ def _load(expr: str, window: Window, universe: str, region: str) -> pd.DataFrame
 def _score(expr: str, window: Window, universe: str, region: str, quantile: float) -> FactorScore:
     try:
         df = _load(expr, window, universe, region)
-    except Exception as e:  # noqa: BLE001 - whatever Qlib raises on a validated expression is that candidate's failure
+    except (MemoryError, OSError):
+        raise                   # the machine's or the data's fault, not the candidate's: end the run, memoise nothing
+    except Exception as e:  # noqa: BLE001 - whatever else Qlib raises on a validated expression is that candidate's failure
         return _failed(f"Qlib raised while computing the expression: {type(e).__name__}: {e}")
     return score_frame(df, quantile)
 

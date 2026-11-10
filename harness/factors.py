@@ -1,9 +1,13 @@
 """Expression validation: the gate every candidate passes before it is scored.
 
-Two guarantees. (1) No candidate reads the future: a look-ahead pattern, or any operator with a negative window or
-offset in the parsed tree, is rejected. (2) Untrusted text never reaches Python's `eval` unless every token is on an
-allow-list: Qlib builds expressions with `eval`, so the allow-list runs first and the parse uses an empty-builtins
-namespace of Qlib's own operators, with no data loaded. `validate` never raises."""
+Three guarantees. (1) No candidate reads the future: a look-ahead pattern, or any operator with a negative window or
+offset in the parsed tree, is rejected. (2) The scored factor is what was written: every window or offset argument `N`
+in the parsed tree must be a positive integer (`bool` is not an integer here; 0, which Qlib reads as an expanding
+window or no shift, is rejected), except that `EMA`'s may also be a smoothing factor strictly between 0 and 1; an
+expression-valued `N` is rejected, and so is a chained comparison (`a < b < c`, which Python evaluates as
+`(a < b) and (b < c)` and Qlib would silently reduce to `b < c`). (3) Untrusted text never reaches Python's `eval`
+unless every token is on an allow-list: Qlib builds expressions with `eval`, so the allow-list runs first and the parse
+uses an empty-builtins namespace of Qlib's own operators, with no data loaded. `validate` never raises."""
 from __future__ import annotations
 
 import re
@@ -57,14 +61,38 @@ def _parse(expr: str):
     ns = _namespace()
     return eval(parse_field(expr), {"__builtins__": {}}, {"Operators": ns, "Feature": ns.Feature})
 
-def _look_ahead(node) -> str | None:
-    """Walk the tree: any child expression, and any `N` (window or offset) that is negative, is a read of the future."""
+def _chained(expr: str) -> str | None:
+    """A chained comparison anywhere in the expression, found on Python's syntax tree of Qlib's rewriting (parsed, never
+    evaluated); a syntax error is left to the parse stage to report."""
+    import ast
+
+    from qlib.utils import parse_field
+    try:
+        tree = ast.parse(parse_field(expr), mode="eval")
+    except SyntaxError:
+        return None
+    if any(isinstance(n, ast.Compare) and len(n.ops) > 1 for n in ast.walk(tree)):
+        return ("a chained comparison such as a < b < c is not supported (Python reads it as (a < b) and (b < c), "
+                "which Qlib reduces to b < c); compare two values at a time and combine them with & or |")
+    return None
+
+def _bad_window(node) -> str | None:
+    """Walk the tree: the first window or offset `N` that is not a positive integer (or, for `EMA`, a float strictly
+    between 0 and 1), with what was found; a negative one is a read of the future."""
     from qlib.data.base import Expression
-    n = getattr(node, "N", None)
-    if isinstance(n, (int, float)) and not isinstance(n, bool) and n < 0:
-        return f"{type(node).__name__} with window/offset {n} reads the future"
+    name = type(node).__name__
+    if hasattr(node, "N"):
+        n = node.N
+        if isinstance(n, Expression):
+            return f"{name}'s window/offset is an expression ({n}), not a positive integer"
+        if isinstance(n, (int, float)) and not isinstance(n, bool) and n < 0:
+            return f"{name} with window/offset {n} reads the future"
+        smoothing = name == "EMA" and isinstance(n, float) and 0 < n < 1
+        if not (smoothing or (isinstance(n, int) and not isinstance(n, bool) and n > 0)):
+            also = " or a smoothing factor strictly between 0 and 1" if name == "EMA" else ""
+            return f"{name}'s window/offset is {n!r}, which is not a positive integer{also}"
     for v in vars(node).values():
-        if isinstance(v, Expression) and (why := _look_ahead(v)): return why
+        if isinstance(v, Expression) and (why := _bad_window(v)): return why
     return None
 
 def _dry_run(expr: str, region: str) -> str | None:
@@ -79,20 +107,21 @@ def _dry_run(expr: str, region: str) -> str | None:
     return None
 
 def validate(expr: str, region: str = "cn") -> tuple[bool, str]:
-    """(True, "") if `expr` may be scored, else (False, reason). Stages: allow-list, look-ahead regex, parse and tree
-    walk, then a dry load when the region's data is present (`data_present`); with no data the dry run is skipped,
+    """(True, "") if `expr` may be scored, else (False, reason). Stages: allow-list, look-ahead regex, chained
+    comparisons, parse and tree walk (windows and offsets), then a dry load when the region's data is present (`data_present`); with no data the dry run is skipped,
     so a data fault is never reported as the candidate's. Never raises."""
     try:
         if region not in REGIONS: return False, f"unknown region {region!r}"
         if why := _allow_list(expr): return False, why
         if FORBIDDEN.search(expr): return False, "Ref with a negative offset reads the future"
+        if why := _chained(expr): return False, why
         try:
             tree = _parse(expr)
         except Exception as e:  # noqa: BLE001 - anything Qlib's eval raises is a parse failure
             return False, f"{type(e).__name__}: {e}"
         from qlib.data.base import Expression
         if not isinstance(tree, Expression): return False, "not an expression over fields"
-        if why := _look_ahead(tree): return False, why
+        if why := _bad_window(tree): return False, why
         if data_present(region) and (why := _dry_run(expr, region)): return False, why
         return True, ""
     except BaseException as e:   # the contract is "never raises"
