@@ -2,7 +2,8 @@
 articles with start_utc <= published < end_utc (the end is exclusive, so an article stamped exactly at the
 cutoff is never returned). A `published` column without a timezone is read as UTC. Only the `year=` partitions
 the range touches are opened, and the symbol and time filters are applied while reading, so a year of news is
-never held whole in memory. Layout: data/fnspid/index/year=YYYY/*.parquet."""
+never held whole in memory. A file whose `stock_symbol` column is not text is skipped only when that column is
+entirely null (how an all-null column is stored); any other type raises TypeError. Layout: data/fnspid/index/year=YYYY/*.parquet."""
 from __future__ import annotations
 
 import pathlib
@@ -35,8 +36,13 @@ class NewsIndex:
     @staticmethod
     def _read(f, symbols, start, end) -> pa.Table:
         schema = pq.read_schema(f)
-        if not pa.types.is_string(schema.field("stock_symbol").type) and not pa.types.is_large_string(schema.field("stock_symbol").type):
-            return pa.table({}, schema=pa.schema([]))      # an all-null symbol column (stored as double) matches no symbol
+        kind = schema.field("stock_symbol").type
+        if not pa.types.is_string(kind) and not pa.types.is_large_string(kind):
+            col = pq.read_table(f, columns=["stock_symbol"])["stock_symbol"]
+            if col.null_count == len(col):
+                return pa.table({}, schema=pa.schema([]))  # an all-null symbol column (stored as double) matches no symbol
+            raise TypeError(f"{f}: stock_symbol is {kind} with {len(col) - col.null_count} non-null values; expected text "
+                            "(or a column that is entirely null)")
         tz = schema.field("published").type.tz
         lo, hi = (start, end) if tz else (start.tz_localize(None), end.tz_localize(None))   # no tz in the file means UTC
         ts = pa.timestamp("us", tz=tz)

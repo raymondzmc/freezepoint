@@ -1,8 +1,12 @@
 """Smoke test: Qlib initializes on each region that is present, Alpha158 computes for a few names, the
 registry refuses a look-ahead, the ledger hides the held-out column, the statistics run on noise.
 usage: python -m harness.smoke"""
-import pathlib, tempfile, datetime as dt
-import numpy as np, pandas as pd
+import pathlib
+import tempfile
+
+import numpy as np
+import pandas as pd
+
 
 def qlib_region(region, provider):
     import qlib
@@ -17,11 +21,11 @@ def qlib_region(region, provider):
     print(f"{region}: {len(cal)} trading days in Jan 2022, Alpha158 on {names} -> {df.shape}")
 
 def main():
-    for region, sub in (("cn", "cn_data"), ("us", "us_data")):
-        p = pathlib.Path.home() / ".qlib" / "qlib_data" / sub
-        if (p / "calendars").exists(): qlib_region(region, p)
-        else: print(f"{region}: no data at {p} (run the download first)")
-    from harness.pit.registry import Registry, LookAheadError
+    from harness.pit.tools import REGIONS, data_dir, data_present
+    for region in REGIONS:
+        if data_present(region): qlib_region(region, data_dir(region))
+        else: print(f"{region}: no data at {data_dir(region)} (run the download first)")
+    from harness.pit.registry import LookAheadError, Registry
     reg = Registry(pathlib.Path(tempfile.mkdtemp()) / "calls.jsonl")
     @reg.register("prices", lag_days=0, doc="daily closes up to as_of")
     def prices(as_of, days=5):

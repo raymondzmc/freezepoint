@@ -18,13 +18,13 @@ from harness import splits
 ARMS = ("frozen", "refine", "bestofn")
 PROVIDERS = ("api", "local", "fake")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")   # the Messages API's `output_config.effort` values
-REGIONS = {"csi300": "cn", "csi500": "cn", "csi800": "cn", "csi1000": "cn", "sp500": "us"}
+UNIVERSE_REGION = {"csi300": "cn", "csi500": "cn", "csi800": "cn", "csi1000": "cn", "sp500": "us"}   # region per universe
 
 
 def region_of(universe: str) -> str:
-    if universe not in REGIONS:
-        raise ValueError(f"unknown universe {universe!r}; known universes: {sorted(REGIONS)}")
-    return REGIONS[universe]
+    if universe not in UNIVERSE_REGION:
+        raise ValueError(f"unknown universe {universe!r}; known universes: {sorted(UNIVERSE_REGION)}")
+    return UNIVERSE_REGION[universe]
 
 
 @dataclass(frozen=True)

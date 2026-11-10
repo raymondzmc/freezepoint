@@ -32,6 +32,39 @@ def synth(tmp_path):
 
 def _reg(tmp_path, root, cutoff=0): return make_registry("cn", tmp_path / "calls.jsonl", news_root=root, news_cutoff_hour_utc=cutoff)
 
+@pytest.mark.parametrize("symbols", ["AAPL", ["AAPL", 5], None, [b"AAPL"]])
+def test_news_symbols_must_be_a_list_of_names(synth, tmp_path, symbols):
+    reg = _reg(tmp_path, synth)
+    with pytest.raises(ValueError, match="symbols"): reg.call("news", "2019-03-05", symbols=symbols, days=3)
+    assert not (tmp_path / "calls.jsonl").exists()
+
+def _symbols_file(root, column):
+    d = pathlib.Path(root) / "year=2019"; d.mkdir(parents=True, exist_ok=True)
+    n = len(column)
+    pq.write_table(pa.table({"article_title": ["t"] * n, "stock_symbol": column, "url": ["u"] * n,
+                             "publisher": ["p"] * n, "article": [None] * n,
+                             "published": pa.array(pd.to_datetime(["2019-03-04"] * n).tz_localize("UTC"),
+                                                   pa.timestamp("us", tz="UTC"))}), d / "odd.parquet")
+
+def test_a_file_whose_symbol_column_is_entirely_null_is_skipped(synth):
+    _symbols_file(synth, pa.array([None, None], pa.float64()))
+    df = NewsIndex(root=synth).query(["AAPL"], pd.Timestamp("2019-03-04", tz="UTC"), pd.Timestamp("2019-03-05", tz="UTC"))
+    assert list(df["published"]) == [pd.Timestamp("2019-03-04 12:00", tz="UTC"), pd.Timestamp("2019-03-04 23:59:59", tz="UTC")]
+
+@pytest.mark.parametrize("column", [pa.array([1, 2], pa.int64()), pa.array([1.0, None], pa.float64())])
+def test_a_symbol_column_of_another_type_raises(synth, column):
+    _symbols_file(synth, column)
+    with pytest.raises(TypeError, match="stock_symbol"):
+        NewsIndex(root=synth).query(["AAPL"], pd.Timestamp("2019-03-04", tz="UTC"), pd.Timestamp("2019-03-05", tz="UTC"))
+
+def test_one_field_list_and_one_region_table():
+    from harness import factors
+    from harness.pit import tools
+    from loop import config
+    assert factors.ALLOWED_FIELDS == frozenset(tools.FIELDS)
+    assert not hasattr(config, "REGIONS") and set(config.UNIVERSE_REGION.values()) <= set(tools.REGIONS)
+    assert tools.REGIONS == tuple(tools.REGION_DIRS)
+
 def test_naive_published_is_utc(synth):
     df = NewsIndex(root=synth).query(["AAPL"], pd.Timestamp("2019-03-04", tz="UTC"), pd.Timestamp("2019-03-05", tz="UTC"))
     assert list(df["published"]) == [pd.Timestamp("2019-03-04 12:00", tz="UTC"), pd.Timestamp("2019-03-04 23:59:59", tz="UTC")]
@@ -147,8 +180,8 @@ def test_universe_is_point_in_time(us_registry):
 
 @pytest.mark.data
 def test_regions_alternate(tmp_path):
-    if not ((pathlib.Path.home() / ".qlib/qlib_data/cn_data").exists() and (pathlib.Path.home() / ".qlib/qlib_data/us_data").exists()):
-        pytest.skip("needs both cn_data and us_data")
+    from harness.pit.tools import data_present
+    if not (data_present("cn") and data_present("us")): pytest.skip("needs both cn_data and us_data")
     cn, us = (make_registry(r, tmp_path / f"{r}.jsonl") for r in ("cn", "us"))
     for _ in range(2):
         a = cn.call("prices", "2022-01-10", instruments=["SH600000"], fields=["$close"], lookback_days=10)

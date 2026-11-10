@@ -3,7 +3,8 @@
 prices come back through the last trading day <= as_of (never after) and only as bare fields, since Qlib
 evaluates a field string as an expression and `Ref($close, -1)` would otherwise return tomorrow's close;
 the universe is the membership on as_of; news is everything published strictly before as_of 00:00 UTC plus
-`cutoff_hour_utc`, with a timestamp that has no timezone read as UTC. Each tool initialises Qlib for its own
+`cutoff_hour_utc`, with a timestamp that has no timezone read as UTC, for `symbols` given as a list of names (a bare
+string is refused rather than read as a list of letters). Each tool initialises Qlib for its own
 region at call time, so a cn registry and a us registry can be used alternately in one process."""
 from __future__ import annotations
 
@@ -14,18 +15,18 @@ import pandas as pd
 from harness.pit.news import DEFAULT_ROOT, NewsIndex
 from harness.pit.registry import Registry
 
-FIELDS = ("$open", "$high", "$low", "$close", "$volume", "$factor")
+FIELDS = ("$open", "$high", "$low", "$close", "$volume", "$factor")   # the one list of fields (harness.factors uses it)
 QLIB_DATA = pathlib.Path.home() / ".qlib" / "qlib_data"   # the one place the Qlib data paths are defined
-_PROVIDERS = {"cn": "cn_data", "us": "us_data"}
-REGIONS = tuple(_PROVIDERS)
+REGION_DIRS = {"cn": "cn_data", "us": "us_data"}   # the one region table: region (also Qlib's region name) -> data dir
+REGIONS = tuple(REGION_DIRS)
 _region: str | None = None
 # One process: Qlib's default 8 workers respawn on every D.features call, ~6.5 s on macOS; with 1, CSI 300 x 4 years takes 1.0-1.4 s.
 _KERNELS = 1
 
 def data_dir(region: str) -> pathlib.Path:
     """The Qlib provider directory of `region`."""
-    if region not in _PROVIDERS: raise ValueError(f"unknown region {region!r}; expected one of {sorted(_PROVIDERS)}")
-    return QLIB_DATA / _PROVIDERS[region]
+    if region not in REGION_DIRS: raise ValueError(f"unknown region {region!r}; expected one of {sorted(REGION_DIRS)}")
+    return QLIB_DATA / REGION_DIRS[region]
 
 def data_present(region: str) -> bool:
     """True when `region`'s provider directory has a daily calendar (`calendars/day.txt`), the file Qlib needs first."""
@@ -41,8 +42,7 @@ def qlib_init(region: str) -> None:
         raise FileNotFoundError(f"no Qlib data for region {region!r}: {d / 'calendars' / 'day.txt'} does not exist")
     if _region == region: return
     import qlib
-    from qlib.constant import REG_CN, REG_US
-    qlib.init(provider_uri=str(d), region={"cn": REG_CN, "us": REG_US}[region], kernels=_KERNELS)
+    qlib.init(provider_uri=str(d), region=region, kernels=_KERNELS)    # Qlib's REG_CN and REG_US are "cn" and "us"
     _region = region
 
 def _last_base(s: pd.Series) -> float:
@@ -62,7 +62,7 @@ def rebase(raw: pd.DataFrame, fields: list[str]) -> pd.DataFrame:
 
 def make_registry(region: str, log_path, news_root=None, news_cutoff_hour_utc: int = 0) -> Registry:
     if not isinstance(news_cutoff_hour_utc, int) or not 0 <= news_cutoff_hour_utc <= 24: raise ValueError("news_cutoff_hour_utc must be an integer in 0..24")
-    if region not in _PROVIDERS: raise ValueError(f"unknown region {region!r}; expected one of {sorted(_PROVIDERS)}")
+    if region not in REGION_DIRS: raise ValueError(f"unknown region {region!r}; expected one of {sorted(REGION_DIRS)}")
     reg, index = Registry(pathlib.Path(log_path)), NewsIndex(news_root or DEFAULT_ROOT)
 
     @reg.register("prices", lag_days=0, doc="daily OHLCV through the last trading day <= as_of; fields are bare Qlib fields such as $close. The result is rebased: "
@@ -94,6 +94,8 @@ def make_registry(region: str, log_path, news_root=None, news_cutoff_hour_utc: i
                       "by the registry, not chosen by the caller. The index's stamps are mostly whole days (00:00 UTC), so a non-zero cutoff "
                       "admits the whole as_of day.")
     def news(as_of, symbols, days=5):
+        if not isinstance(symbols, (list, tuple)) or not all(isinstance(s, str) for s in symbols):
+            raise ValueError(f"symbols must be a list of ticker names, got {symbols!r}")
         if not isinstance(days, int) or days < 0: raise ValueError("days must be a non-negative integer")
         end = pd.Timestamp(as_of, tz="UTC") + pd.Timedelta(hours=news_cutoff_hour_utc)
         return index.query(list(symbols), end - pd.Timedelta(days=days), end)

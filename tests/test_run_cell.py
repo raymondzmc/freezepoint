@@ -9,8 +9,9 @@ import time
 import pytest
 import yaml
 
+from harness.pit.tools import data_present
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-QLIB = pathlib.Path.home() / ".qlib" / "qlib_data"
 ARMS = ("frozen", "refine", "bestofn")
 
 
@@ -85,7 +86,7 @@ def test_a_signal_stops_every_run_and_writes_no_report(tmp_path, sig):
 
 @pytest.mark.data
 def test_tiny_cell_end_to_end(tmp_path):
-    if not ((QLIB / "cn_data").exists() and (QLIB / "us_data").exists()): pytest.skip("no Qlib data")
+    if not (data_present("cn") and data_present("us")): pytest.skip("no Qlib data")
     t0 = time.monotonic()
     p = run_script(tmp_path, tiny_configs(tmp_path), SEEDS="0 1", JOBS="2")
     print(f"tiny cell wall-clock: {time.monotonic() - t0:.1f} s")

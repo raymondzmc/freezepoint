@@ -12,13 +12,13 @@ import pytest
 import yaml
 
 from harness.ledger.ledger import Ledger, Trial
+from harness.pit.tools import data_present
 from harness.splits import get as get_split
 from loop import config, provenance
 from loop import run as cli
 from loop.generator import DEFAULT_FAKE_EXPRS
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-QLIB = pathlib.Path.home() / ".qlib" / "qlib_data"
 REAL_MISSING_DATA = cli.missing_data      # the `stubs` fixture replaces it
 FILES = ("config.yaml", "provenance.json", "ledger.jsonl", "calls.jsonl", "chosen.json", "done")
 
@@ -337,7 +337,7 @@ def test_missing_data_exits_non_zero_from_the_command_line(tmp_path):
 
 @pytest.mark.data
 def test_cli_end_to_end_with_fake_generator(tmp_path):
-    if not ((QLIB / "cn_data").exists() and (QLIB / "us_data").exists()): pytest.skip("no Qlib data")
+    if not (data_present("cn") and data_present("us")): pytest.skip("no Qlib data")
     cfg_path = write_config(tmp_path, transfer_to=["csi500", "sp500"])
     runs = tmp_path / "runs"
     cmd = [sys.executable, "-m", "loop.run", str(cfg_path), "--seed", "0", "--provider", "fake",

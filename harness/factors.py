@@ -13,12 +13,12 @@ from __future__ import annotations
 import re
 from types import SimpleNamespace
 
-from harness.pit.tools import REGIONS, data_present, qlib_init
+from harness.pit.tools import FIELDS, REGIONS, data_present, qlib_init
 
 ALLOWED_OPS = frozenset([
     "Ref", "Mean", "Std", "Max", "Min", "Sum", "Rank", "Corr", "Cov", "Delta", "Slope", "Rsquare", "Resi", "Quantile", "Abs",
     "Log", "Sign", "Power", "If", "Greater", "Less", "EMA", "WMA", "Mad", "IdxMax", "IdxMin"])
-ALLOWED_FIELDS = frozenset(["$open", "$high", "$low", "$close", "$volume", "$factor"])
+ALLOWED_FIELDS = frozenset(FIELDS)
 FORBIDDEN = re.compile(r"Ref\s*\([^)]*,\s*-\s*\d")
 LABEL = "Ref($close, -2) / Ref($close, -1) - 1"
 MAX_LEN = 1000
