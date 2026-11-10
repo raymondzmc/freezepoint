@@ -3,10 +3,11 @@
 Three implementations share one interface: `FakeGenerator` (tests), `ApiGenerator` (Anthropic Messages API) and
 `LocalGenerator` (a time-locked model under `data/models/`); `make_generator` builds the one a config names.
 Guarantees: `propose` and `refine` return exactly what `parse_expression` extracts from the model's reply, or the
-stripped reply itself when nothing can be extracted (never text the model did not write, never an exception), so the
-caller can record it and the validator can reject it. The operator and field lists in the prompts come from
+stripped reply itself when nothing can be extracted (never text the model did not write, never an exception over what
+the model wrote), so the caller can record it and the validator can reject it. The operator and field lists in the prompts come from
 `harness.factors`. The API request carries no sampling parameter and no seed (the Messages API accepts neither), so
-the config must say so: a non-null temperature is refused at construction.
+the config must say so: a non-null temperature is refused at construction. An API reply that did not end its turn (a
+refusal, a cut-off at the output-token limit) is not a candidate: it raises `GenerationError`.
 The API key is read only at the first call, never at import or construction."""
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import time
 from typing import Protocol
 
 from harness.factors import ALLOWED_FIELDS, ALLOWED_OPS
+from loop.config import EFFORTS
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PROMPTS = pathlib.Path(__file__).parent / "prompts"
@@ -102,31 +104,59 @@ def read_api_key() -> str:
             if sep and k.strip() == "ANTHROPIC_API_KEY" and v.strip().strip("'\""): return v.strip().strip("'\"")
     raise RuntimeError(f"ANTHROPIC_API_KEY is not set: export it or put ANTHROPIC_API_KEY=... in {ENV_FILE}")
 
+class GenerationError(RuntimeError):
+    """A reply that is not a candidate: the request did not end its turn (a refusal, the output-token limit, or any
+    other stop reason than `end_turn`). It aborts the run like any other generator failure; no trial is logged."""
+
 class ApiGenerator:
     """The Anthropic Messages API. One request per expression. No sampling parameter and no seed is sent: the API
-    accepts neither, so `temperature` must be None and `last_cost["sampling"]` records "api-default". Retries are the
-    SDK's own (3, covering 408/409/429/5xx and connection errors)."""
-    def __init__(self, model: str, temperature: float | None, max_output_tokens: int, client=None):
+    accepts neither, so `temperature` must be None and `last_cost["sampling"]` records "api-default". `effort` None
+    sends no `output_config` (the API's default effort applies) and is recorded as "api-default"; otherwise it must be
+    one of `EFFORTS` and is sent as `output_config.effort`. Only a reply whose stop reason is `end_turn` is read; any
+    other (a `refusal`, `max_tokens`, ...) raises `GenerationError` naming it, so a cut-off or a declined request never
+    becomes a candidate. `last_cost["stop_reasons"]` lists each request's stop reason. Retries are the SDK's own (3,
+    covering 408/409/429/5xx and connection errors)."""
+    def __init__(self, model: str, temperature: float | None, max_output_tokens: int, effort: str | None = None,
+                 client=None):
         if temperature is not None:
             raise ValueError("the Messages API no longer accepts sampling parameters, so generator.temperature must be "
                              f"null for the api provider (got {temperature!r}); a config that says otherwise would "
                              "misdescribe the run")
-        self.model, self.max_output_tokens, self.last_cost, self._client = model, max_output_tokens, {}, client
+        if effort is not None and (not isinstance(effort, str) or effort not in EFFORTS):
+            raise ValueError(f"generator.effort must be null (the API's default) or one of {EFFORTS}, got {effort!r}")
+        self.model, self.max_output_tokens, self.effort, self.last_cost = model, max_output_tokens, effort, {}
+        self._client = client
     def _get_client(self):
         if self._client is None:
             import anthropic
             self._client = anthropic.Anthropic(api_key=read_api_key(), max_retries=3)
         return self._client
+    def _request(self, prompt: str) -> dict:
+        kw = {"model": self.model, "max_tokens": self.max_output_tokens, "messages": [{"role": "user", "content": prompt}]}
+        if self.effort is not None: kw["output_config"] = {"effort": self.effort}
+        return kw
+    def _check(self, r) -> None:
+        if r.stop_reason == "end_turn": return
+        why = f"the API reply stopped with stop_reason {r.stop_reason!r}"
+        if r.stop_reason == "refusal":
+            d = getattr(r, "stop_details", None)
+            why += f" (category {getattr(d, 'category', None)!r}: {getattr(d, 'explanation', None) or 'no explanation'})"
+        elif r.stop_reason == "max_tokens":
+            why += (f": the reply was cut off at max_tokens={self.max_output_tokens} (thinking counts against it), so "
+                    "generator.max_output_tokens is too small for this model")
+        raise GenerationError(why + "; this is not a candidate, nothing was logged, and the run stops")
     def _ask(self, prompts: list[str]) -> list[str]:
         client, t0, tokens_in, tokens_out, served = self._get_client(), time.monotonic(), 0, 0, None
-        out = []
+        out, stops = [], []
         for prompt in prompts:
-            r = client.messages.create(model=self.model, max_tokens=self.max_output_tokens,
-                                       messages=[{"role": "user", "content": prompt}])
+            r = client.messages.create(**self._request(prompt))
+            self._check(r)
             tokens_in += r.usage.input_tokens; tokens_out += r.usage.output_tokens; served = r.model
+            stops.append(r.stop_reason)
             out.append(parse_expression("".join(b.text for b in r.content if b.type == "text")))
         self.last_cost = {"input_tokens": tokens_in, "output_tokens": tokens_out, "seconds": time.monotonic() - t0,
-                          "model": served, "sampling": "api-default"}
+                          "model": served, "sampling": "api-default", "effort": self.effort or "api-default",
+                          "stop_reasons": stops}
         return out
     def propose(self, context: str, n: int, seed: int) -> list[str]:
         return self._ask([render("propose", propose_values(context))] * n)
@@ -163,7 +193,8 @@ class LocalGenerator:
 def make_generator(gen_cfg) -> Generator:
     """The generator a config's `generator` section names. No key is read here: the API generator reads it at its
     first call."""
-    if gen_cfg.provider == "api": return ApiGenerator(gen_cfg.model, gen_cfg.temperature, gen_cfg.max_output_tokens)
+    if gen_cfg.provider == "api":
+        return ApiGenerator(gen_cfg.model, gen_cfg.temperature, gen_cfg.max_output_tokens, gen_cfg.effort)
     if gen_cfg.provider == "local": return LocalGenerator(gen_cfg.model)
     if gen_cfg.provider == "fake": return FakeGenerator(list(gen_cfg.exprs))
     raise ValueError(f"unknown generator provider {gen_cfg.provider!r}")

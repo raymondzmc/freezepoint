@@ -58,6 +58,15 @@ def test_shipped_configs_load(arm):
     cfg = shipped(arm)
     assert cfg.arm == arm and cfg.generator.model == "claude-fable-5-2" and cfg.generator.temperature is None
     assert cfg.transfer_to == ("csi500", "sp500") and cfg.seeds == (0, 1, 2, 3, 4)
+    assert cfg.generator.max_output_tokens == 16000 and cfg.generator.effort is None
+    assert "effort: null" in (CONFIGS / f"cn_{arm}.yaml").read_text()
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max", None])
+def test_effort_values_the_api_documents_load(tmp_path, effort):
+    d = raw()
+    d["generator"]["effort"] = effort
+    assert C.load(write(tmp_path, d)).generator.effort == effort
 
 
 def test_roundtrip_through_run_dir(tmp_path):
@@ -144,6 +153,8 @@ BAD = {
     "candidates mismatch": _set("budget.n_candidates", 20),
     "bad provider": _set("generator.provider", "openai"),
     "api with temperature": _set("generator.temperature", 0.7),
+    "unknown effort": _set("generator.effort", "minimal"),
+    "effort not text": _set("generator.effort", 3),
     "fake without exprs": _fake,
     "fake with empty exprs": lambda d: (_fake(d), d["generator"].update(exprs=[])),
     "missing section": lambda d: d.pop("budget"),

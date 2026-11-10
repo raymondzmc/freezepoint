@@ -7,9 +7,10 @@ seeds: [0, 1, 2, 3, 4]
 generator:
   provider: api
   model: claude-fable-5-2
-  revision: claude-fable-5-2  # pin a dated snapshot id here before the real runs
+  revision: claude-fable-5-2  # complete as written (ids take no date suffix); each trial records the model served
   temperature: null    # the Messages API no longer accepts sampling parameters, so the API samples at its default
-  max_output_tokens: 8192
+  max_output_tokens: 16000  # thinking is always on and counts against it; a reply cut off here stops the run
+  effort: null         # null sends no effort parameter, so the API's default effort applies (recorded as api-default)
 control_generator:
   provider: local
   model: pit-4b-ft-201912   # data/models.py name; effective cutoff from harness/cutoff_probe.py

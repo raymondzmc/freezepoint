@@ -16,6 +16,7 @@ from harness import splits
 
 ARMS = ("frozen", "refine", "bestofn")
 PROVIDERS = ("api", "local", "fake")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")   # the Messages API's `output_config.effort` values
 REGIONS = {"csi300": "cn", "csi500": "cn", "csi800": "cn", "csi1000": "cn", "sp500": "us"}
 
 
@@ -32,6 +33,7 @@ class Generator:
     revision: str
     temperature: float | None
     max_output_tokens: int
+    effort: str | None = None             # api only: `output_config.effort`; None sends nothing (the API's default)
     exprs: tuple[str, ...] | None = None  # the fixed expressions a `fake` provider returns
 
 
@@ -118,6 +120,8 @@ def validate(cfg: RunConfig) -> RunConfig:
         raise ValueError("the Messages API no longer accepts sampling parameters, so generator.temperature must be "
                          f"null for the api provider (got {g.temperature!r}); a config that says otherwise would "
                          "misdescribe the run")
+    if g.effort is not None and (not isinstance(g.effort, str) or g.effort not in EFFORTS):
+        raise ValueError(f"generator.effort must be null (the API's default) or one of {EFFORTS}, got {g.effort!r}")
     if g.provider == "fake" and not g.exprs:
         raise ValueError("generator.provider 'fake' needs a non-empty generator.exprs")
     return cfg
