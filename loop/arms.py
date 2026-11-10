@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 
 from harness import splits
-from harness.backtest import evaluate, score_dict
+from harness.backtest import evaluate, score_record
 from harness.factors import validate
 from harness.ledger.ledger import Ledger, LoopView, Trial
 from loop.config import RunConfig, region_of, run_dir, run_id
@@ -77,7 +77,7 @@ class _Run:
         if not ok: return
         for name in ("feedback", "pilot"):     # pilot is written for the diagnostic and never read back here
             fs = self.evaluate(expr, getattr(self.split, name), self.cfg.universe, self.region)
-            self.ledger.score(tid, name, {**score_dict(fs), "daily_ls": list(fs.daily_ls), "dates": list(fs.dates)})
+            self.ledger.score(tid, name, score_record(fs))
 
 
 def run_arm(cfg: RunConfig, seed: int, gen: Generator, ledger: Ledger, evaluate=evaluate, *, context: str = "",

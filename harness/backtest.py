@@ -4,7 +4,9 @@ Guarantees. (1) `evaluate` is the only place a candidate is executed for scoring
 unvalidated reaches `D.features` through it (the label is appended here and reads the future by design). (2) The
 arithmetic is a pure function of an (instrument, datetime) frame, `score_frame`, so it is testable without data.
 (3) Scores are deterministic and memoised in-process. (4) A failed score has NaN metrics and no series, so a failure
-can never be mistaken for a weak result; `score_dict` writes strict JSON (non-finite floats become null)."""
+can never be mistaken for a weak result; `score_dict` writes strict JSON (non-finite floats become null). (5) Qlib
+failing on a validated expression is that candidate's failed score, never an exception that ends a run; Qlib failing
+to start is not, and propagates."""
 from __future__ import annotations
 
 import dataclasses
@@ -89,16 +91,30 @@ def _load(expr: str, window: Window, universe: str, region: str) -> pd.DataFrame
     qlib_init(region)
     return D.features(D.instruments(universe), [expr, LABEL], start_time=window.start, end_time=window.end, disk_cache=0)
 
+def _score(expr: str, window: Window, universe: str, region: str, quantile: float) -> FactorScore:
+    qlib_init(region)   # outside the try: a data directory Qlib cannot start on is not a property of the candidate
+    try:
+        df = _load(expr, window, universe, region)
+    except Exception as e:  # noqa: BLE001 - whatever Qlib raises on a validated expression is that candidate's failure
+        return _failed(f"Qlib raised while computing the expression: {type(e).__name__}: {e}")
+    return score_frame(df, quantile)
+
 def evaluate(expr: str, window: Window, universe: str, region: str, quantile: float = 0.2) -> FactorScore:
     """Score `expr` on `window` over `universe`. Validates first; a rejected expression returns a failed score with
-    the validator's reason and is never executed. Memoised on every argument."""
+    the validator's reason and is never executed. An exception Qlib raises while computing a validated expression
+    is a failed score that names it; an exception from initialising Qlib propagates and nothing is memoised.
+    Memoised on every argument, failures included."""
     key = (expr, window, universe, region, quantile)
     if key not in _MEMO:
         ok, why = validate(expr, region)
-        _MEMO[key] = score_frame(_load(expr, window, universe, region), quantile) if ok else _failed(why)
+        _MEMO[key] = _score(expr, window, universe, region, quantile) if ok else _failed(why)
     return _MEMO[key]
 
 def score_dict(fs: FactorScore) -> dict:
     """Everything but the series, as strict JSON: non-finite floats become None."""
     d = {k: v for k, v in dataclasses.asdict(fs).items() if k not in ("daily_ls", "dates")}
     return {k: (None if isinstance(v, float) and not math.isfinite(v) else v) for k, v in d.items()}
+
+def score_record(fs: FactorScore) -> dict:
+    """What the ledger stores for one window: `score_dict` plus the daily long-short series and its dates."""
+    return {**score_dict(fs), "daily_ls": list(fs.daily_ls), "dates": list(fs.dates)}

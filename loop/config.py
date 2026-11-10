@@ -100,7 +100,9 @@ def _build(cls, d, where: str):
     return cls(**kw)
 
 
-def _validate(cfg: RunConfig) -> None:
+def validate(cfg: RunConfig) -> RunConfig:
+    """Raise ValueError if `cfg` is not a config `load` would accept; return it unchanged otherwise. For configs
+    changed in memory (`dataclasses.replace`), which bypass `load`."""
     if cfg.arm not in ARMS:
         raise ValueError(f"arm must be one of {ARMS}, got {cfg.arm!r}")
     splits.get(cfg.split)
@@ -118,13 +120,12 @@ def _validate(cfg: RunConfig) -> None:
                          "misdescribe the run")
     if g.provider == "fake" and not g.exprs:
         raise ValueError("generator.provider 'fake' needs a non-empty generator.exprs")
+    return cfg
 
 
 def load(path) -> RunConfig:
     d = yaml.safe_load(Path(path).read_text())
-    cfg = _build(RunConfig, d, "config")
-    _validate(cfg)
-    return cfg
+    return validate(_build(RunConfig, d, "config"))
 
 
 def to_dict(cfg: RunConfig) -> dict:

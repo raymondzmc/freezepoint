@@ -1,11 +1,12 @@
 """Generators: the one place a language model is asked for a factor expression.
 
 Three implementations share one interface: `FakeGenerator` (tests), `ApiGenerator` (Anthropic Messages API) and
-`LocalGenerator` (a time-locked model under `data/models/`). Guarantees: `propose` and `refine` return exactly what
-`parse_expression` extracts from the model's reply, or the stripped reply itself when nothing can be extracted (never
-text the model did not write, never an exception), so the caller can record it and the validator can reject it. The
-operator and field lists in the prompts come from `harness.factors`. The API request carries no sampling parameter and no
-seed (the Messages API accepts neither), so the config must say so: a non-null temperature is refused at construction.
+`LocalGenerator` (a time-locked model under `data/models/`); `make_generator` builds the one a config names.
+Guarantees: `propose` and `refine` return exactly what `parse_expression` extracts from the model's reply, or the
+stripped reply itself when nothing can be extracted (never text the model did not write, never an exception), so the
+caller can record it and the validator can reject it. The operator and field lists in the prompts come from
+`harness.factors`. The API request carries no sampling parameter and no seed (the Messages API accepts neither), so
+the config must say so: a non-null temperature is refused at construction.
 The API key is read only at the first call, never at import or construction."""
 from __future__ import annotations
 
@@ -23,6 +24,18 @@ ENV_FILE = ROOT / ".env"
 MODELS = ROOT / "data" / "models"
 HISTORY_SHOWN = 3
 FEEDBACK_KEYS = ("ic", "icir", "ls_sharpe", "turnover")
+
+# What `--provider fake` returns when the config lists no expressions: short Alpha158-style factors, all different, and
+# at index 1 one that reads the future, so a fake run (seed 0 meets it on its second generation) logs an invalid one.
+DEFAULT_FAKE_EXPRS = (
+    "$close / Ref($close, 5) - 1",
+    "Ref($close, -1) / $close - 1",
+    "Mean($close, 10) / $close",
+    "Std($close / Ref($close, 1) - 1, 20)",
+    "($close - $open) / ($high - $low + 0.001)",
+    "Corr($close, Log($volume + 1), 10)",
+    "$volume / Mean($volume, 20)",
+)
 
 _FENCE = re.compile(r"```[^\n`]*\n(.*?)```", re.DOTALL)
 _EXPR_LINE = re.compile(r"^(?:\$|\(|(?:" + "|".join(sorted(ALLOWED_OPS)) + r")\b)")
@@ -146,3 +159,11 @@ class LocalGenerator:
         return [self._generate(render("propose", propose_values(context)), seed) for _ in range(n)]
     def refine(self, expr: str, feedback: dict, history: list[dict], seed: int) -> str:
         return self._generate(render("refine", refine_values(expr, feedback, history)), seed)
+
+def make_generator(gen_cfg) -> Generator:
+    """The generator a config's `generator` section names. No key is read here: the API generator reads it at its
+    first call."""
+    if gen_cfg.provider == "api": return ApiGenerator(gen_cfg.model, gen_cfg.temperature, gen_cfg.max_output_tokens)
+    if gen_cfg.provider == "local": return LocalGenerator(gen_cfg.model)
+    if gen_cfg.provider == "fake": return FakeGenerator(list(gen_cfg.exprs))
+    raise ValueError(f"unknown generator provider {gen_cfg.provider!r}")

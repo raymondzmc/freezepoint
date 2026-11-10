@@ -1,0 +1,218 @@
+"""Tests for the command line. The data-free tests call `main` with the arm, the scorer and the proposal context
+stubbed; the `data` test runs `python -m loop.run` end to end with the fake generator."""
+import json
+import os
+import pathlib
+import subprocess
+import sys
+from dataclasses import replace
+
+import pytest
+import yaml
+
+from harness.ledger.ledger import Ledger, Trial
+from harness.splits import get as get_split
+from loop import config
+from loop import run as cli
+from loop.generator import DEFAULT_FAKE_EXPRS
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+QLIB = pathlib.Path.home() / ".qlib" / "qlib_data"
+FILES = ("config.yaml", "ledger.jsonl", "calls.jsonl", "chosen.json", "done")
+
+
+def write_config(tmp_path, **changes):
+    d = yaml.safe_load((ROOT / "configs" / "cn_refine.yaml").read_text())
+    d["budget"].update(max_steps=1, n_candidates=2)
+    for k, v in changes.items(): d[k] = v
+    p = tmp_path / "cfg.yaml"
+    p.write_text(yaml.safe_dump(d))
+    return p
+
+
+def fake_cfg(path):
+    cfg = config.load(path)
+    return replace(cfg, generator=replace(cfg.generator, provider="fake", model="fake", revision="fake",
+                                          exprs=DEFAULT_FAKE_EXPRS))
+
+
+@pytest.fixture
+def stubs(monkeypatch):
+    """Stub the three data-backed steps; record what ran. The arm writes chosen.json like the real one."""
+    log = []
+    def arm(cfg, seed, gen, ledger, *, context, root, tool_log_span):
+        log.append(("arm", cfg, seed, context, tool_log_span))
+        ledger.append(Trial(arm=cfg.arm, run=config.run_id(cfg, seed), step=0, artifact="$close"))
+        (config.run_dir(cfg, seed, root) / "chosen.json").write_text("{}\n")
+    def score(cfg, rid, ledger):
+        log.append(("score", rid)); return 0
+    def context(cfg, d):
+        log.append(("context", d)); (d / "calls.jsonl").write_text("{}\n"); return "a context", (0, 1)
+    monkeypatch.setattr(cli, "run_arm", arm)
+    monkeypatch.setattr(cli, "score_run", score)
+    monkeypatch.setattr(cli, "proposal_context", context)
+    return log
+
+
+def main(*argv):
+    return cli.main([str(a) for a in argv])
+
+
+def test_seed_not_in_config_seeds_fails(tmp_path, stubs, capsys):
+    cfg = write_config(tmp_path)
+    assert main(cfg, "--seed", 7, "--provider", "fake", "--runs-dir", tmp_path / "runs") != 0
+    out, err = capsys.readouterr()
+    assert out == "" and "seed 7" in err and "[0, 1, 2, 3, 4]" in err
+    assert not (tmp_path / "runs").exists() and stubs == []
+
+
+def test_score_only_without_a_run_fails(tmp_path, stubs, capsys):
+    cfg = write_config(tmp_path)
+    assert main(cfg, "--seed", 0, "--provider", "fake", "--score-only", "--runs-dir", tmp_path / "runs") != 0
+    assert "no run directory" in capsys.readouterr().err and not (tmp_path / "runs").exists()
+    rid = config.run_id(fake_cfg(cfg), 0)
+    (tmp_path / "runs" / rid).mkdir(parents=True)
+    assert main(cfg, "--seed", 0, "--provider", "fake", "--score-only", "--runs-dir", tmp_path / "runs") != 0
+    assert "chosen.json" in capsys.readouterr().err and stubs == []
+    assert list((tmp_path / "runs" / rid).iterdir()) == []
+
+
+def test_normal_run_writes_effective_config_and_prints_only_the_run_id(tmp_path, stubs, capsys):
+    cfg = write_config(tmp_path)
+    assert main(cfg, "--seed", 0, "--provider", "fake", "--runs-dir", tmp_path / "runs") == 0
+    eff = fake_cfg(cfg)
+    rid = config.run_id(eff, 0)
+    assert capsys.readouterr().out == rid + "\n"
+    d = tmp_path / "runs" / rid
+    assert config.load(d / "config.yaml") == eff
+    assert [s[0] for s in stubs] == ["context", "arm", "score"]
+    assert stubs[1][3] == "a context" and stubs[1][4] == (0, 1) and stubs[2] == ("score", rid)
+    assert (d / "done").exists() and sorted(p.name for p in d.iterdir()) == sorted(FILES)
+
+
+def test_overrides_change_the_run_id(tmp_path, stubs, capsys):
+    cfg = write_config(tmp_path)
+    ids = []
+    for extra in ([], ["--model", "other-model"]):
+        assert main(cfg, "--seed", 0, "--provider", "fake", *extra, "--runs-dir", tmp_path / "runs") == 0
+        ids.append(capsys.readouterr().out.strip())
+    base = fake_cfg(cfg)
+    other = replace(base, generator=replace(base.generator, model="other-model", revision="other-model"))
+    assert ids == [config.run_id(base, 0), config.run_id(other, 0)] and ids[0] != ids[1]
+    assert config.run_id(config.load(cfg), 0) not in ids
+    assert config.load(tmp_path / "runs" / ids[1] / "config.yaml") == other
+
+
+def test_fake_provider_keeps_the_configs_own_exprs(tmp_path, stubs, capsys):
+    raw = yaml.safe_load(write_config(tmp_path).read_text())
+    raw["generator"].update(provider="fake", exprs=["$close", "$open"])
+    p = tmp_path / "own.yaml"; p.write_text(yaml.safe_dump(raw))
+    assert main(p, "--seed", 0, "--provider", "fake", "--runs-dir", tmp_path / "runs") == 0
+    rid = capsys.readouterr().out.strip()
+    assert config.load(tmp_path / "runs" / rid / "config.yaml").generator.exprs == ("$close", "$open")
+
+
+def test_override_is_validated(tmp_path, stubs, capsys):
+    raw = yaml.safe_load(write_config(tmp_path).read_text())
+    raw["generator"].update(provider="local", temperature=0.7)
+    p = tmp_path / "local.yaml"; p.write_text(yaml.safe_dump(raw))
+    assert main(p, "--seed", 0, "--provider", "api", "--runs-dir", tmp_path / "runs") != 0
+    assert "temperature" in capsys.readouterr().err and not (tmp_path / "runs").exists()
+
+
+def test_already_done_run_is_left_alone(tmp_path, stubs, capsys):
+    cfg = write_config(tmp_path)
+    rid = config.run_id(fake_cfg(cfg), 0)
+    d = tmp_path / "runs" / rid
+    d.mkdir(parents=True)
+    for name in FILES: (d / name).write_text(f"{name}\n")
+    before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in d.iterdir()}
+    assert main(cfg, "--seed", 0, "--provider", "fake", "--runs-dir", tmp_path / "runs") == 0
+    assert capsys.readouterr().out == rid + "\n" and stubs == []
+    assert {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in d.iterdir()} == before
+    assert sorted(p.name for p in (tmp_path / "runs").iterdir()) == [rid]
+
+
+def test_unfinished_run_is_moved_aside_and_started_fresh(tmp_path, stubs, capsys):
+    cfg = write_config(tmp_path)
+    rid = config.run_id(fake_cfg(cfg), 0)
+    d = tmp_path / "runs" / rid
+    d.mkdir(parents=True)
+    (d / "ledger.jsonl").write_text('{"half": "a dead run"}\n')
+    assert main(cfg, "--seed", 0, "--provider", "fake", "--runs-dir", tmp_path / "runs") == 0
+    assert capsys.readouterr().out == rid + "\n"
+    (aborted,) = [p for p in (tmp_path / "runs").iterdir() if p.name != rid]
+    assert aborted.name.startswith(f"{rid}.aborted-") and aborted.name.endswith("Z")
+    assert (aborted / "ledger.jsonl").read_text() == '{"half": "a dead run"}\n' and not (aborted / "done").exists()
+    assert "a dead run" not in (d / "ledger.jsonl").read_text() and (d / "done").exists()
+    assert [s[0] for s in stubs] == ["context", "arm", "score"]
+
+
+def test_score_only_runs_the_scorer_and_writes_done(tmp_path, stubs, capsys):
+    cfg = write_config(tmp_path)
+    rid = config.run_id(fake_cfg(cfg), 0)
+    d = tmp_path / "runs" / rid
+    d.mkdir(parents=True)
+    (d / "chosen.json").write_text("{}\n"); (d / "ledger.jsonl").write_text("")
+    assert main(cfg, "--seed", 0, "--provider", "fake", "--score-only", "--runs-dir", tmp_path / "runs") == 0
+    assert capsys.readouterr().out == rid + "\n"
+    assert stubs == [("score", rid)] and (d / "done").exists()
+    assert sorted(p.name for p in d.iterdir()) == ["chosen.json", "done", "ledger.jsonl"]   # no config rewrite
+
+
+def test_score_only_on_a_done_run_rewrites_done_after_scoring(tmp_path, stubs, monkeypatch):
+    cfg = write_config(tmp_path)
+    rid = config.run_id(fake_cfg(cfg), 0)
+    d = tmp_path / "runs" / rid
+    d.mkdir(parents=True)
+    for name in ("chosen.json", "ledger.jsonl", "done"): (d / name).write_text("")
+    seen = []
+    monkeypatch.setattr(cli, "score_run", lambda cfg, rid, ledger: seen.append((d / "done").exists()) or 0)
+    assert main(cfg, "--seed", 0, "--provider", "fake", "--score-only", "--runs-dir", tmp_path / "runs") == 0
+    assert seen == [False] and (d / "done").exists()                    # nothing is written while `done` stands
+
+
+def test_exception_leaves_no_done(tmp_path, stubs, monkeypatch, capsys):
+    cfg = write_config(tmp_path)
+    def boom(*a, **kw): raise RuntimeError("API outage")
+    monkeypatch.setattr(cli, "score_run", boom)
+    with pytest.raises(RuntimeError, match="outage"):
+        main(cfg, "--seed", 0, "--provider", "fake", "--runs-dir", tmp_path / "runs")
+    d = tmp_path / "runs" / config.run_id(fake_cfg(cfg), 0)
+    assert d.is_dir() and not (d / "done").exists() and capsys.readouterr().out == ""
+
+
+@pytest.mark.data
+def test_cli_end_to_end_with_fake_generator(tmp_path):
+    if not ((QLIB / "cn_data").exists() and (QLIB / "us_data").exists()): pytest.skip("no Qlib data")
+    cfg_path = write_config(tmp_path, transfer_to=["csi500", "sp500"])
+    runs = tmp_path / "runs"
+    cmd = [sys.executable, "-m", "loop.run", str(cfg_path), "--seed", "0", "--provider", "fake",
+           "--runs-dir", str(runs)]
+    env = {**os.environ, "MLFLOW_DISABLE_AGENT_HINT": "1"}
+    p = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=600, check=False)
+    assert p.returncode == 0, p.stderr[-4000:]
+    rid = config.run_id(fake_cfg(cfg_path), 0)
+    assert p.stdout.splitlines()[-1] == rid
+    d = runs / rid
+    assert all((d / f).is_file() for f in FILES)
+    assert all((d / f).stat().st_mtime_ns <= (d / "done").stat().st_mtime_ns for f in FILES)
+
+    ledger = Ledger(d / "ledger.jsonl")
+    trials = [t for t in ledger.trials().values() if t["run"] == rid]
+    assert len(trials) == 2 and [t["valid"] for t in trials] == [True, False]   # DEFAULT_FAKE_EXPRS[1] is invalid
+    windows = {"feedback", "pilot", "heldout"} | {f"transfer:{u}:{w}" for u in ("csi500", "sp500")
+                                                   for w in ("feedback", "pilot", "heldout")}
+    for t in trials:
+        assert set(t["scores"]) == (windows if t["valid"] else set())
+        assert t["tool_log_span"] == [0, 1]
+
+    (call,) = [json.loads(line) for line in (d / "calls.jsonl").read_text().splitlines()]
+    assert call["tool"] == "universe" and call["as_of"] == get_split("cn-2018-2023").feedback.end
+    assert call["args"] == {"market": "csi300"}
+
+    snapshot = lambda: {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in sorted(runs.rglob("*")) if p.is_file()}
+    before = snapshot()
+    again = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=120, check=False)
+    assert again.returncode == 0 and again.stdout.splitlines()[-1] == rid
+    assert snapshot() == before

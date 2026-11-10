@@ -7,7 +7,15 @@ import pytest
 
 from harness.factors import ALLOWED_OPS
 from loop import generator
-from loop.generator import ApiGenerator, FakeGenerator, LocalGenerator, parse_expression, render
+from loop.generator import (
+    DEFAULT_FAKE_EXPRS,
+    ApiGenerator,
+    FakeGenerator,
+    LocalGenerator,
+    make_generator,
+    parse_expression,
+    render,
+)
 
 PROPOSE = {"operators": "Mean", "fields": "$close", "context": "csi300, 2018-01-01 to 2021-12-31"}
 REFINE = {"operators": "Mean", "fields": "$close", "expr": "$close", "feedback": "ic 0.01", "history": "none"}
@@ -150,6 +158,36 @@ def test_local_generator_passes_the_encoding_decodes_new_tokens_only_and_is_gree
     assert log["decoded"][0] == [7, 8]                                  # only the newly generated tokens
     assert g.last_cost["input_tokens"] == 3 and g.last_cost["output_tokens"] == 2 and g.last_cost["sampling"] == "greedy"
     assert g.refine("$close", {"ic": 0.1}, [], 9) == "Rank($close)" and log["seeds"][-1] == 9
+
+# make_generator and the default fake expressions
+def gen_cfg(provider, **kw):
+    from loop.config import Generator
+    return Generator(**{"provider": provider, "model": "m-1", "revision": "m-1-rev", "temperature": None,
+                        "max_output_tokens": 321, **kw})
+def test_make_generator_api_needs_no_key(monkeypatch, tmp_path):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(generator, "ENV_FILE", tmp_path / ".env")
+    g = make_generator(gen_cfg("api"))
+    assert isinstance(g, ApiGenerator) and g.model == "m-1" and g.max_output_tokens == 321 and g._client is None
+def test_make_generator_api_refuses_a_temperature():
+    with pytest.raises(ValueError, match="temperature"): make_generator(gen_cfg("api", temperature=0.5))
+def test_make_generator_local_passes_the_model_name(monkeypatch):
+    seen = []
+    monkeypatch.setattr(generator, "LocalGenerator", lambda name: seen.append(name) or "local-generator")
+    assert make_generator(gen_cfg("local")) == "local-generator" and seen == ["m-1"]
+def test_make_generator_fake_returns_the_configured_exprs():
+    g = make_generator(gen_cfg("fake", exprs=("$close", "$open")))
+    assert isinstance(g, FakeGenerator) and g.propose("", 3, 0) == ["$close", "$open", "$close"]
+def test_make_generator_unknown_provider():
+    with pytest.raises(ValueError, match="provider"): make_generator(gen_cfg("openai"))
+def test_default_fake_exprs_all_valid_but_one_that_reads_the_future(monkeypatch, tmp_path):
+    from harness import factors
+    monkeypatch.setattr(factors, "QLIB_DATA", tmp_path / "no-qlib-data")      # no dry run: data-free
+    verdicts = {e: factors.validate(e, "cn") for e in DEFAULT_FAKE_EXPRS}
+    bad = [e for e, (ok, _) in verdicts.items() if not ok]
+    assert len(DEFAULT_FAKE_EXPRS) >= 6 and len(set(DEFAULT_FAKE_EXPRS)) == len(DEFAULT_FAKE_EXPRS)
+    assert len(bad) == 1 and "future" in verdicts[bad[0]][1]
+    assert DEFAULT_FAKE_EXPRS.index(bad[0]) == 1                     # seed 0 meets it on its second generation
 
 @pytest.mark.api
 def test_api_live_one_proposal():

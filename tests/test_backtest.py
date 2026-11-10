@@ -111,3 +111,36 @@ def test_failed_score_dict_is_strict_json():
     d = score_dict(fs)
     assert "daily_ls" not in d and "dates" not in d and d["ic"] is None and d["ok"] is False
     assert json.loads(json.dumps(d, allow_nan=False)) == d
+
+# a Qlib failure while computing a validated expression is a failed score; a failure to initialise Qlib is not
+@pytest.fixture
+def no_qlib(monkeypatch, tmp_path):
+    """No data, no Qlib init: the validator skips its dry run; `qlib_init` is a no-op unless a test says otherwise."""
+    from harness import factors
+    monkeypatch.setattr(factors, "QLIB_DATA", tmp_path / "no-qlib-data")
+    monkeypatch.setattr(backtest, "qlib_init", lambda region: None)
+    monkeypatch.setattr(backtest, "_MEMO", {})
+
+def test_qlib_error_while_computing_becomes_a_failed_score(no_qlib, monkeypatch):
+    calls = []
+    def broken(*a):
+        calls.append(a); raise KeyError("$close not found for SH600000")
+    monkeypatch.setattr(backtest, "_load", broken)
+    w = Window("2019-01-01", "2019-03-31")
+    fs = evaluate("Mean($close, 5) / $close", w, "csi300", "cn")
+    assert not fs.ok and "KeyError" in fs.reason and "$close not found for SH600000" in fs.reason
+    assert math.isnan(fs.ic) and fs.daily_ls == [] and fs.dates == []
+    assert evaluate("Mean($close, 5) / $close", w, "csi300", "cn") == fs and len(calls) == 1   # memoised, like any
+
+def test_qlib_init_error_propagates(no_qlib, monkeypatch):
+    def bad_init(region): raise FileNotFoundError("no provider_uri at ~/.qlib/qlib_data/cn_data")
+    monkeypatch.setattr(backtest, "qlib_init", bad_init)
+    monkeypatch.setattr(backtest, "_load", lambda *a: pytest.fail("_load must not run when Qlib cannot start"))
+    with pytest.raises(FileNotFoundError, match="provider_uri"):
+        evaluate("Mean($close, 5) / $close", Window("2019-01-01", "2019-03-31"), "csi300", "cn")
+    assert backtest._MEMO == {}                                         # nothing memoised: a retry tries again
+
+def test_score_record_is_score_dict_plus_series():
+    fs = FactorScore(True, "", 0.1, 0.2, 0.01, 0.3, 0.5, 2, [0.1, -0.1], ["2020-01-01", "2020-01-02"])
+    series = {"daily_ls": [0.1, -0.1], "dates": ["2020-01-01", "2020-01-02"]}
+    assert backtest.score_record(fs) == {**score_dict(fs), **series}
