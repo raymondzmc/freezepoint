@@ -13,13 +13,13 @@ import yaml
 
 from harness.ledger.ledger import Ledger, Trial
 from harness.splits import get as get_split
-from loop import config
+from loop import config, provenance
 from loop import run as cli
 from loop.generator import DEFAULT_FAKE_EXPRS
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 QLIB = pathlib.Path.home() / ".qlib" / "qlib_data"
-FILES = ("config.yaml", "ledger.jsonl", "calls.jsonl", "chosen.json", "done")
+FILES = ("config.yaml", "provenance.json", "ledger.jsonl", "calls.jsonl", "chosen.json", "done")
 
 
 def write_config(tmp_path, **changes):
@@ -164,6 +164,9 @@ def test_normal_run_writes_effective_config_and_prints_only_the_run_id(tmp_path,
     assert [s[0] for s in stubs] == ["context", "arm", "score"]
     assert stubs[1][3] == "a context" and stubs[1][4] == (0, 1) and stubs[2] == ("score", rid)
     assert (d / "done").exists() and sorted(p.name for p in d.iterdir()) == sorted(FILES)
+    written, now = json.loads((d / "provenance.json").read_text()), provenance.compute(eff)
+    assert {k: written[k] for k in provenance.COMPARED} == {k: now[k] for k in provenance.COMPARED}
+    assert written["git_commit"] == now["git_commit"]
 
 
 def test_overrides_change_the_run_id(tmp_path, stubs, capsys):

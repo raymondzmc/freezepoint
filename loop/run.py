@@ -17,7 +17,10 @@ last and is the only sign that a run is complete; nothing is written to the dire
 context comes from one point-in-time `universe` call as of the feedback window's end, logged in `calls.jsonl`; the
 trials record that call's line range (0-based, end exclusive) as `tool_log_span`. (5) Standard output carries only
 the run id, as its last line; everything else goes to standard error. Exit 0 on success, non-zero otherwise, and an
-exception never leaves `done` behind."""
+exception never leaves `done` behind. (6) A fresh run writes `provenance.json` (`loop.provenance`: git commit,
+prompt and source hashes, data lock files, library versions, the split's windows) into its directory before the arm
+starts. Not in this version: a resumed run (scoring a finished arm) does not re-check its provenance against the code
+that resumes it."""
 from __future__ import annotations
 
 import argparse
@@ -31,7 +34,7 @@ from pathlib import Path
 from harness import splits
 from harness.ledger.ledger import Ledger
 from harness.pit.tools import make_registry
-from loop import config
+from loop import config, provenance
 from loop.arms import run_arm
 from loop.generator import DEFAULT_FAKE_EXPRS, make_generator
 from loop.score import score_run
@@ -82,6 +85,7 @@ def _run(cfg: config.RunConfig, seed: int, rid: str, runs: Path) -> None:
         d.rename(aborted)
         _say(f"{rid}: an earlier attempt did not finish; moved it to {aborted.name} and starting fresh")
     d = config.run_dir(cfg, seed, runs)
+    provenance.write(cfg, d)
     gen = make_generator(cfg.generator)
     context, span = proposal_context(cfg, d)
     _say(f"{rid}: context: {context}")

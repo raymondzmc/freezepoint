@@ -4,7 +4,9 @@ one effective config that differs only in `arm`.
 Guarantees. (1) Every function takes only one finished cell: a directory without `done`, runs whose configs differ in
 anything but `arm`, two runs with the same arm and seed, and a run whose trials are not exactly its arm's budget with
 steps `0..n-1` once each (what two live loops appending to one run would leave) each raise ValueError naming the
-directories (and the fields or the steps found), so smoke runs can never be averaged with real ones. (2) The candidate a run holds after step `k`
+directories (and the fields or the steps found), so smoke runs can never be averaged with real ones. So do a run
+without `provenance.json` and runs whose provenance differs in a field of `loop.provenance.COMPARED` (prompts, source,
+lock files, split windows; the git commit is not compared). (2) The candidate a run holds after step `k`
 is chosen by the rule the arms use (`loop.arms._best`: the first highest feedback ic among the valid trials with an
 ok feedback score), always on feedback ic, whatever window and metric are read off it. (3) A missing, failed or null
 score is NaN and is left out of the mean and of `n`; it is never read as zero.
@@ -24,7 +26,7 @@ from scipy import stats
 
 from harness.ledger.ledger import Ledger
 from harness.ledger.stats import deflated_sharpe, pbo_cscv
-from loop import config
+from loop import config, provenance
 from loop.arms import _best, _eligible
 
 PBO_BLOCKS = 8
@@ -41,6 +43,7 @@ class Run:
     chosen: str | None      # trial id from chosen.json; None when nothing was chosen
     trials: list[dict]      # this run's trials in generation order, full view
     n_trials: int           # every candidate, invalid ones included
+    provenance: dict        # provenance.json
 
     @property
     def arm(self) -> str: return self.cfg.arm
@@ -60,6 +63,10 @@ def _load_run(d: Path) -> Run:
         chosen = json.loads((d / "chosen.json").read_text())
     except OSError as e:
         raise ValueError(f"{d}: not a complete run directory: {e}") from e
+    if not (d / provenance.FILE).is_file():
+        raise ValueError(f"{d}: has no {provenance.FILE}, so what code, prompts and data produced it is unknown; "
+                         "such a run is not analysed")
+    prov = json.loads((d / provenance.FILE).read_text())
     rid, seed = chosen["run"], chosen["seed"]
     if rid != config.run_id(cfg, seed) or chosen["arm"] != cfg.arm:
         raise ValueError(f"{d}: chosen.json names run {rid!r} (arm {chosen['arm']!r}), but config.yaml with seed "
@@ -72,7 +79,7 @@ def _load_run(d: Path) -> Run:
                          f"{n} trials with steps 0..{n - 1} once each; a run like this was not made by one invocation "
                          "of one arm and is not analysed")
     trials = sorted((t for t in ledger.trials().values() if t["run"] == rid), key=lambda t: t["step"])
-    return Run(d, cfg, rid, seed, chosen["id"], trials, ledger.count(rid))
+    return Run(d, cfg, rid, seed, chosen["id"], trials, ledger.count(rid), prov)
 
 
 def budget(cfg: config.RunConfig) -> int:
@@ -93,6 +100,10 @@ def load_cell(run_dirs) -> list[Run]:
         diff = sorted(k for k in ref.keys() | cur.keys() if k != "arm" and ref.get(k) != cur.get(k))
         if diff:
             raise ValueError(f"{runs[0].path} and {r.path} belong to different cells: their configs differ in {diff}")
+        prov = sorted(k for k in provenance.COMPARED if runs[0].provenance.get(k) != r.provenance.get(k))
+        if prov:
+            raise ValueError(f"{runs[0].path} and {r.path} belong to different cells: their {provenance.FILE} differ "
+                             f"in {prov}")
     seen: dict[tuple[str, int], Path] = {}
     for r in runs:
         if (r.arm, r.seed) in seen:

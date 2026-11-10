@@ -49,11 +49,15 @@ def from_runs(patterns, out):
     if unfinished: sys.exit("from-runs: refusing unfinished run(s) without `done`: " + ", ".join(unfinished))
     fake = [r.name for r in runs if (yaml.safe_load((r / "config.yaml").read_text()).get("generator") or {}).get("provider") == "fake"]
     if fake: sys.exit("from-runs: refusing fake-generator run(s): " + ", ".join(fake) + "; fake-generator runs are pipeline checks and are never committed")
+    unproven = [r.name for r in runs if not (r / "provenance.json").is_file()]
+    if unproven: sys.exit("from-runs: refusing run(s) without provenance.json (what code, prompts and data produced them is unknown): " + ", ".join(unproven))
     chosen = sorted((json.loads((r / "chosen.json").read_text()) for r in runs), key=lambda c: c["run"])
     configs = {json.loads((r / "chosen.json").read_text())["run"]: yaml.safe_load((r / "config.yaml").read_text())
                for r in runs}
+    provenance = {json.loads((r / "chosen.json").read_text())["run"]: json.loads((r / "provenance.json").read_text())
+                  for r in runs}
     print(f"from-runs: committing {len(runs)} runs:", *sorted(r.name for r in runs), sep="\n  ", file=sys.stderr)
-    _write({"artifacts": chosen, "configs": configs, "made": _now()}, out)
+    _write({"artifacts": chosen, "configs": configs, "provenance": provenance, "made": _now()}, out)
 
 def anchor(out):
     if not shutil.which("ots"): sys.exit("install the OpenTimestamps client: pip install opentimestamps-client")

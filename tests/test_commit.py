@@ -14,6 +14,9 @@ import pytest
 import yaml
 
 from loop import config as lcfg
+from loop import provenance
+
+PROVENANCE = provenance.compute(lcfg.load(Path(__file__).resolve().parent.parent / "configs" / "cn_refine.yaml"))
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "commit" / "commit.py"
@@ -34,13 +37,15 @@ def cli(*args, cwd=ROOT):
 
 
 def make_run(root, seed, *, arm="refine", artifact="Mean($close, 5)/$close", done=True, chosen=True, nothing=False,
-             fake=False):
+             fake=False, prov=True):
     cfg = lcfg.load(ROOT / "configs" / f"cn_{arm}.yaml")
     if fake:
         g = dataclasses.replace(cfg.generator, provider="fake", model="fake", revision="fake", exprs=("$close",))
         cfg = dataclasses.replace(cfg, generator=g)
     cfg = dataclasses.replace(cfg, seeds=(seed,))
     d = lcfg.run_dir(cfg, seed, root=root)
+    if prov:
+        (d / "provenance.json").write_text(json.dumps({**PROVENANCE, "git_commit": f"commit-{seed}"}) + "\n")
     if chosen:
         out = {"id": None if nothing else f"t{seed}", "artifact": None if nothing else artifact, "arm": arm,
                "run": d.name, "seed": seed, "step": None if nothing else 1}
@@ -68,6 +73,8 @@ def test_from_runs_collects_chosen_artifacts(tmp_path, runs):
     assert set(body["configs"]) == {d.name for d in dirs}
     for d in dirs:
         assert body["configs"][d.name] == yaml.safe_load((d / "config.yaml").read_text())
+        assert body["provenance"][d.name] == json.loads((d / "provenance.json").read_text())
+    assert set(body) == {"artifacts", "configs", "provenance", "made"}
     assert body["made"]
     assert r.stdout.splitlines()[0].startswith("commitment ")
     assert len(r.stdout.splitlines()) == 2
@@ -118,6 +125,16 @@ def test_fake_generator_run_is_refused_and_nothing_written(tmp_path):
     assert not out.exists() or not any(out.iterdir())
     ok = cli("from-runs", make_run(root, 2), tmp_path / "out2")    # real runs still work
     assert ok.returncode == 0 and (tmp_path / "out2" / "commitment.json").exists()
+
+
+def test_run_without_provenance_is_refused_and_nothing_written(tmp_path):
+    root = tmp_path / "runs"
+    make_run(root, 0)
+    bad = make_run(root, 1, prov=False)
+    out = tmp_path / "out"
+    r = cli("from-runs", root / "*", out)
+    assert r.returncode != 0 and bad.name in r.stderr and "provenance.json" in r.stderr
+    assert not out.exists() or not any(out.iterdir())
 
 
 def test_aborted_and_non_run_directories_are_ignored(tmp_path):

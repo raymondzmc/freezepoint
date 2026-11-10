@@ -17,11 +17,12 @@ from analysis.curves import curve, paired_difference, selection_stats
 from harness.backtest import FactorScore, score_record
 from harness.ledger.ledger import Ledger, Trial
 from harness.ledger.stats import deflated_sharpe, pbo_cscv
-from loop import config
+from loop import config, provenance
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BASE = config.load(ROOT / "configs" / "cn_refine.yaml")       # csi300, transfer to csi500 and sp500
 DATES = [str(d.date()) for d in pd.bdate_range("2018-01-02", periods=40)]
+PROVENANCE = {}       # one computation per split: the real one, cached, since every synthetic run needs it
 UNSCORED = object()     # a trial with no scores at all, as an invalid candidate is left
 nan = float("nan")
 
@@ -53,6 +54,8 @@ def make_run(root, arm, seed, trials, *, cfg=None, chosen="best", done=True, **c
     trials with an ok feedback score, by hand; `chosen=None` writes a null id."""
     cfg = cfg or cfg_for(arm, **cfg_kw)
     d = config.run_dir(cfg, seed, root)
+    if cfg.split not in PROVENANCE: PROVENANCE[cfg.split] = provenance.compute(cfg)
+    (d / "provenance.json").write_text(json.dumps(PROVENANCE[cfg.split], indent=2) + "\n")
     rid = config.run_id(cfg, seed)
     ledger = Ledger(d / "ledger.jsonl")
     (d / "calls.jsonl").write_text("")
@@ -230,6 +233,43 @@ def test_a_run_that_matches_its_budget_loads(tmp_path):
     dirs = [make_run(tmp_path, "frozen", 0, [trial(0.01)]), make_run(tmp_path, "refine", 0, [trial(0.01)] * 4),
             make_run(tmp_path, "bestofn", 0, [trial(0.01)] * 4)]
     assert set(selection_stats(dirs).n_trials) == {1, 4}
+
+
+def test_a_run_without_provenance_is_refused(tmp_path):
+    a = make_run(tmp_path, "frozen", 0, [trial(0.01)])
+    b = make_run(tmp_path, "frozen", 1, [trial(0.01)])
+    (b / "provenance.json").unlink()
+    for f in (curve, selection_stats):
+        with pytest.raises(ValueError, match=f"{b.name}.*provenance.json"):
+            f([a, b])
+
+
+def edit_provenance(d, **changes):
+    p = json.loads((d / "provenance.json").read_text())
+    p.update(changes)
+    (d / "provenance.json").write_text(json.dumps(p))
+
+
+@pytest.mark.parametrize("field, value", [
+    ("prompts_sha256", "0" * 64), ("source_sha256", "1" * 64),
+    ("lock_files", {"uv.lock": "2" * 64}),
+    ("split", {"name": "cn-2018-2023", "feedback": ["2018-01-01", "2021-06-30"], "pilot": ["2022-01-17", "2022-06-30"],
+               "heldout": ["2022-07-15", "2023-12-31"], "forward": None, "embargo_days": 10}),
+])
+def test_runs_that_disagree_on_provenance_are_two_cells(tmp_path, field, value):
+    a = make_run(tmp_path, "frozen", 0, [trial(0.01)])
+    b = make_run(tmp_path, "refine", 0, [trial(0.01)] * 4)
+    edit_provenance(b, **{field: value})
+    with pytest.raises(ValueError, match=field) as e:
+        curve([a, b])
+    assert a.name in str(e.value) and b.name in str(e.value)
+
+
+def test_git_commit_and_dirty_flag_are_recorded_not_compared(tmp_path):
+    a = make_run(tmp_path, "frozen", 0, [trial(0.01)])
+    b = make_run(tmp_path, "refine", 0, [trial(0.01)] * 4)
+    edit_provenance(b, git_commit="f" * 40, git_dirty=True)
+    assert len(curve([a, b]))
 
 
 def test_no_run_dirs_raises():
