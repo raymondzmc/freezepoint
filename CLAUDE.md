@@ -2,9 +2,8 @@
 
 Two papers, one harness; see README.md for the layout and the rules the code enforces.
 
-Notion projects (the status box and Log on each page are the shared state with the personal agent):
-- Refine-vs-freeze: a stopping rule for noisy verifiers (the stopping-rule paper), https://app.notion.com/p/40e0acc50542818f8fc6d286455e2c70
-- Contamination-proof evaluation for agent-discovered artifacts (the protocol paper), https://app.notion.com/p/40e0acc5054281b39360e3ca9720d59c
+Notion project (the status box and Log on the page are the shared state with the personal agent):
+- Refine-vs-freeze: a stopping rule for noisy verifiers, https://app.notion.com/p/40e0acc50542818f8fc6d286455e2c70. It covers both papers: the contamination-proof protocol project was merged into it on 2026-11-10 (its notes and plan are the page's "Protocol" section).
 - Goal: "Submit the refine-vs-freeze paper to ICML 2027, on the contamination-proof harness".
 
 Session habits:
