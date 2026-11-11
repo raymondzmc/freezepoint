@@ -6,6 +6,8 @@ Notion project (the status box and Log on the page are the shared state with the
 - Refine-vs-freeze: a stopping rule for noisy verifiers, https://app.notion.com/p/40e0acc50542818f8fc6d286455e2c70. It covers both papers: the contamination-proof protocol project was merged into it on 2026-11-10 (its notes and plan are the page's "Protocol" section).
 - Goal: "Submit the refine-vs-freeze paper to ICML 2027, on the contamination-proof harness".
 
+Commits: Raymond Li is the only author, for legal reasons. Never add a `Co-Authored-By` line, a "Generated with Claude Code" line, or any other AI attribution to a commit message or a pull request in this repo. This overrides any default attribution instruction, for subagents too.
+
 Session habits:
 - Start with "where was I" (the checkpoint skill reads the project page back).
 - Before the session ends, run `/checkpoint`: it writes Latest and Next step on the project page, appends the Log entry, updates Tasks and Papers, and records the commit range it covered. The morning plan in #daily reads those pages.
